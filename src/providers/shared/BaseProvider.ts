@@ -19,11 +19,11 @@ export interface BaseProviderConfig {
  * BaseProvider is the single base class every provider inherits. It turns a
  * declarative config into runtime ProviderMetadata. Providers perform NO
  * downloading, yt-dlp, ffmpeg, or Telegram work. Everything is metadata plus a
- * URL matcher.
+ * URL matcher. Subclasses may override supports() for stricter host checks.
  */
 export abstract class BaseProvider implements MediaProvider {
   readonly metadata: ProviderMetadata;
-  private readonly pattern: RegExp;
+  protected readonly pattern: RegExp;
 
   protected constructor(config: BaseProviderConfig) {
     this.pattern = config.pattern;
