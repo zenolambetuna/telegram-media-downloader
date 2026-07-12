@@ -1,60 +1,59 @@
-import { CacheService } from '../cache/CacheService';
 import { DownloadEngine } from '../downloader/DownloadEngine';
 import { CounterRepository } from '../storage/CounterRepository';
 import { ErrorRepository } from '../storage/ErrorRepository';
-import { TelegramStorageService } from '../telegram/TelegramStorageService';
+import { TelegramStorage } from '../telegram/TelegramStorage';
 import { DownloadRequest, QueueJobResult } from '../types/media';
+import { AppError } from '../types/errors';
+import { logger } from '../logger/logger';
 import { normalizeUrl } from '../utils/url';
-import { safeRemove } from '../utils/fs';
 
+/**
+ * MediaPipeline orchestrates the full workflow:
+ *   cache check -> download -> upload via Storage Engine -> deliver -> cleanup.
+ * It never calls Telegram directly; all Telegram concerns go through
+ * TelegramStorage. Providers only ever produce a DownloadArtifact.
+ */
 export class MediaPipeline {
   constructor(
-    private readonly cacheService: CacheService,
     private readonly downloadEngine: DownloadEngine,
-    private readonly telegramStorageService: TelegramStorageService,
+    private readonly telegramStorage: TelegramStorage,
     private readonly counterRepository: CounterRepository,
     private readonly errorRepository: ErrorRepository,
   ) {}
 
   async execute(request: DownloadRequest): Promise<QueueJobResult> {
     const canonicalUrl = normalizeUrl(request.url);
-    const cached = await this.cacheService.get(canonicalUrl);
+
+    const cached = await this.telegramStorage.exists({
+      originalUrl: request.url,
+      canonicalUrl,
+    });
+
     if (cached) {
-      await this.telegramStorageService.copyFromStorage(request.chatId, cached.messageId);
+      const newMessageId = await this.telegramStorage.copy(request.chatId, cached.messageId);
       await this.counterRepository.increment('cache_hits');
-      return { messageId: cached.messageId, cached: true };
+      logger.info({ canonicalUrl }, 'served from cache without download');
+      return { messageId: newMessageId, cached: true };
     }
 
     const artifact = await this.downloadEngine.download(request);
 
     try {
-      const uploadResult = await this.telegramStorageService.uploadWithRetry(artifact);
-      await this.cacheService.put({
-        messageId: uploadResult.messageId,
-        fileId: uploadResult.fileId,
-        provider: artifact.metadata.provider,
-        originalUrl: artifact.metadata.originalUrl,
-        canonicalUrl: artifact.metadata.canonicalUrl,
-        title: artifact.metadata.title,
-        duration: artifact.metadata.duration,
-        thumbnail: artifact.metadata.thumbnail,
-        quality: artifact.quality,
-        mimeType: artifact.mimeType,
-        uploadDate: new Date().toISOString(),
-        checksum: artifact.checksum,
-      });
-      await this.telegramStorageService.copyFromStorage(request.chatId, uploadResult.messageId);
+      const stored = await this.telegramStorage.upload(artifact);
+      const deliveredMessageId = await this.telegramStorage.copy(request.chatId, stored.messageId);
       await this.counterRepository.increment('uploads');
-      return { messageId: uploadResult.messageId, cached: false };
+      return { messageId: deliveredMessageId, cached: false };
     } catch (error) {
+      const appError =
+        error instanceof AppError ? error : new AppError('Upload failed', 'UPLOAD_FAILED', error);
       await this.errorRepository.log({
-        code: 'UPLOAD_FAILED',
-        message: error instanceof Error ? error.message : 'upload failed',
+        code: appError.code,
+        message: appError.message,
         context: JSON.stringify({ url: request.url }),
       });
-      throw error;
+      throw appError;
     } finally {
-      await safeRemove(artifact.filePath);
+      await this.telegramStorage.deleteTemp(artifact.filePath);
     }
   }
 }

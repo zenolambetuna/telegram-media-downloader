@@ -3,7 +3,7 @@ import { config } from '../config/env';
 import { logger } from '../logger/logger';
 import { DatabaseConnection } from '../storage/Database';
 import { SqliteMediaRepository } from '../storage/MediaRepository';
-import { CacheService } from '../cache/CacheService';
+import { ThumbnailRepository } from '../storage/ThumbnailRepository';
 import { ErrorRepository } from '../storage/ErrorRepository';
 import { CounterRepository } from '../storage/CounterRepository';
 import { ProcessRunner } from '../downloader/ProcessRunner';
@@ -21,7 +21,12 @@ import { VimeoProvider } from '../providers/vimeo/VimeoProvider';
 import { SoundCloudProvider } from '../providers/soundcloud/SoundCloudProvider';
 import { MediaInspector } from '../core/MediaInspector';
 import { DownloadEngine } from '../downloader/DownloadEngine';
-import { TelegramStorageService } from '../telegram/TelegramStorageService';
+import { MediaSender } from '../telegram/MediaSender';
+import { UploadManager } from '../telegram/UploadManager';
+import { MessageManager } from '../telegram/MessageManager';
+import { FileCache } from '../telegram/FileCache';
+import { ThumbnailUploader } from '../telegram/ThumbnailUploader';
+import { TelegramStorage } from '../telegram/TelegramStorage';
 import { MediaPipeline } from '../core/MediaPipeline';
 import { DownloadQueue } from '../queue/DownloadQueue';
 import { BotContext, SessionData } from '../types/bot';
@@ -54,23 +59,26 @@ export async function createBotApplication(): Promise<{
 }> {
   const database = new DatabaseConnection();
   const mediaRepository = new SqliteMediaRepository(database);
-  const cacheService = new CacheService(mediaRepository);
+  const thumbnailRepository = new ThumbnailRepository(database);
   const errorRepository = new ErrorRepository(database);
   const counterRepository = new CounterRepository(database);
+
   const processRunner = new ProcessRunner();
   const ytDlpClient = new YtDlpClient(processRunner);
   const providerRegistry = new ProviderRegistry(createProviders(ytDlpClient));
   const mediaInspector = new MediaInspector(providerRegistry);
   const downloadEngine = new DownloadEngine(providerRegistry);
+
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
-  const telegramStorageService = new TelegramStorageService(bot.api);
-  const pipeline = new MediaPipeline(
-    cacheService,
-    downloadEngine,
-    telegramStorageService,
-    counterRepository,
-    errorRepository,
-  );
+
+  const mediaSender = new MediaSender(bot.api);
+  const uploadManager = new UploadManager(mediaSender);
+  const messageManager = new MessageManager(bot.api);
+  const fileCache = new FileCache(mediaRepository);
+  const thumbnailUploader = new ThumbnailUploader(bot.api, thumbnailRepository);
+  const telegramStorage = new TelegramStorage(uploadManager, messageManager, fileCache, thumbnailUploader);
+
+  const pipeline = new MediaPipeline(downloadEngine, telegramStorage, counterRepository, errorRepository);
   const queue = new DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS);
 
   bot.use(session({ initial: initialSession }));
@@ -98,7 +106,7 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply('send a supported media URL. i will inspect it, show real formats, queue the job, store it in your Telegram Drive channel, then clean the temp file.');
+    await ctx.reply('send a supported media URL. i inspect it, show real formats, queue the job, store it in your Telegram Drive channel through the Storage Engine, then clean the temp file.');
   });
 
   bot.command('stats', async (ctx) => {
@@ -108,7 +116,7 @@ export async function createBotApplication(): Promise<{
     }
 
     const [cacheCount, uploads, cacheHits, errors] = await Promise.all([
-      cacheService.count(),
+      telegramStorage.cacheCount(),
       counterRepository.get('uploads'),
       counterRepository.get('cache_hits'),
       errorRepository.count(),
@@ -233,12 +241,7 @@ export async function createBotApplication(): Promise<{
     void queue
       .add(`${userId}:${Date.now()}`, async () => {
         await ctx.api.sendMessage(chatId, 'downloading...');
-        const result = await pipeline.execute({
-          url,
-          formatId,
-          userId,
-          chatId,
-        });
+        const result = await pipeline.execute({ url, formatId, userId, chatId });
         await ctx.api.sendMessage(chatId, result.cached ? 'served from cache' : 'uploaded from fresh download');
         return result;
       })
