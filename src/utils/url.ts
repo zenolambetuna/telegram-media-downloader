@@ -1,18 +1,27 @@
-export function isValidUrl(value: string): boolean {
+import { AppError } from '../types/errors';
+
+export function assertValidUrl(input: string): URL {
   try {
-    new URL(value);
-    return true;
-  } catch {
-    return false;
+    return new URL(input.trim());
+  } catch (error) {
+    throw new AppError('Invalid URL', 'INVALID_URL', error);
   }
 }
 
 export function normalizeUrl(value: string): string {
-  const url = new URL(value.trim());
+  const url = assertValidUrl(value);
   url.hash = '';
-  if ((url.hostname === 'www.youtube.com' || url.hostname === 'youtube.com') && url.searchParams.has('v')) {
-    const videoId = url.searchParams.get('v');
-    return `https://www.youtube.com/watch?v=${videoId}`;
+  const host = url.hostname.toLowerCase();
+
+  if ((host === 'youtube.com' || host === 'www.youtube.com') && url.searchParams.has('v')) {
+    return `https://www.youtube.com/watch?v=${url.searchParams.get('v')}`;
   }
+
+  if (host === 'youtu.be') {
+    const id = url.pathname.split('/').filter(Boolean)[0];
+    return `https://www.youtube.com/watch?v=${id}`;
+  }
+
+  url.searchParams.sort();
   return url.toString();
 }

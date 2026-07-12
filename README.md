@@ -1,90 +1,84 @@
-# Telegram Media Downloader Bot
+# Telegram Media Downloader Engine
 
-Production-ready Telegram Media Downloader Bot built with TypeScript, Node.js, grammY, yt-dlp, FFmpeg, dotenv, and Pino.
+Telegram Media Downloader Engine is a production-grade media acquisition and Telegram storage module built for a future Telegram Drive ecosystem.
 
-This project is designed as the media download engine for a larger Telegram Drive ecosystem. It is modular, provider-based, cache-aware, and optimized for Telegram Channel backed storage.
+This is not a toy downloader and not a single-platform bot. It is a reusable engine that Telegram Drive can call as an internal media ingestion service.
 
-## Features
+## What it does
 
-- Multi-provider URL detection
-- Supported platforms:
-  - YouTube
-  - Facebook
-  - Instagram
-  - X (Twitter)
-  - TikTok
-  - Threads
-  - Vimeo
-  - Reddit
-  - Pinterest
-  - SoundCloud
-- Provider isolation with a common interface
-- Metadata extraction before download
-- Inline keyboard flow for format selection
-- yt-dlp based download orchestration
-- FFmpeg powered post-processing hooks
-- Telegram Channel as storage backend
-- Cache-first delivery using `copyMessage`
-- Temporary local storage with guaranteed cleanup
-- Structured logging with Pino
-- Rate limiting and flood protection
-- Admin statistics and health visibility
-- Clean architecture for future Telegram Drive integration
+- Detects provider from incoming URL
+- Extracts metadata with yt-dlp
+- Shows only actually available formats
+- Downloads selected media with retry and timeout protection
+- Uploads media to a Telegram Channel as the permanent storage backend
+- Stores metadata and checksum in a production-ready database
+- Reuses cached Telegram messages when the same media was already ingested
+- Cleans temporary files automatically
+- Exposes admin visibility for queue, providers, errors, and throughput
 
-## Architecture
+## Supported providers
 
-This bot is not a one-off downloader. It is the Media Downloader module for a future Telegram Drive platform.
+- YouTube
+- Facebook
+- Instagram
+- TikTok
+- X (Twitter)
+- Threads
+- Reddit
+- Pinterest
+- Vimeo
+- SoundCloud
 
-Core design goals:
+The provider system is isolated by contract. Adding a new provider only requires adding a new provider folder and registering it during composition.
 
-- provider implementations are isolated
-- storage backend can evolve independently
-- metadata persistence is abstracted
-- download pipeline is reusable by future services
-- Telegram specific delivery logic is separated from domain logic
+## Architecture goals
 
-## Project Structure
+This engine is built for long-term reuse inside Telegram Drive.
+
+Key decisions:
+
+- provider logic is isolated from bot logic
+- download orchestration is independent from Telegram delivery
+- cache lookup is independent from database implementation
+- storage is abstracted through repositories and services
+- queue and concurrency are centralized
+- error handling is typed and structured
+- temporary file lifecycle is explicit and enforced
+
+That means Telegram Drive can later call this engine as a reusable module, worker service, or internal API without rewriting provider or download logic.
+
+## Project structure
 
 ```text
 src/
-  bot/
-  commands/
-  handlers/
-  providers/
-    youtube/
-    facebook/
-    instagram/
-    twitter/
-    tiktok/
-    threads/
-    vimeo/
-    reddit/
-    pinterest/
-    soundcloud/
-  telegram/
-  storage/
-  cache/
-  core/
-  utils/
-  config/
-  logs/
-  types/
-  main.ts
+  bot/              grammY bot composition and middleware
+  providers/        provider-specific modules
+  telegram/         Telegram upload and delivery services
+  storage/          database connection and repositories
+  downloader/       yt-dlp orchestration and download engine
+  cache/            cache lookup service
+  queue/            job queue and concurrency control
+  config/           environment parsing and runtime config
+  core/             domain services and shared orchestration
+  utils/            helpers and infrastructure utilities
+  types/            shared types and contracts
+  logger/           structured logging
+  main.ts           process entrypoint
 ```
 
-## Requirements
+## Runtime requirements
 
 - Ubuntu 22.04 or newer
-- Node.js 20+
+- Node.js 20 or newer
 - FFmpeg installed and available in PATH
 - yt-dlp installed and available in PATH
-- Telegram Bot Token
-- Telegram Channel ID for storage
+- Telegram bot token
+- Telegram storage channel ID
 - Admin Telegram user ID
 
-## Ubuntu VPS Setup
+## Ubuntu VPS installation
 
-### 1. Update system
+### 1. Update packages
 
 ```bash
 sudo apt update && sudo apt upgrade -y
@@ -94,7 +88,7 @@ sudo apt update && sudo apt upgrade -y
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
+sudo apt install -y nodejs build-essential
 node -v
 npm -v
 ```
@@ -108,22 +102,13 @@ ffmpeg -version
 
 ### 4. Install yt-dlp
 
-Recommended method:
-
 ```bash
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
 yt-dlp --version
 ```
 
-Alternative with pipx:
-
-```bash
-sudo apt install -y pipx
-pipx install yt-dlp
-```
-
-### 5. Clone and install
+### 5. Clone and install dependencies
 
 ```bash
 git clone https://github.com/zenolambetuna/telegram-media-downloader.git
@@ -137,7 +122,7 @@ npm install
 cp .env.example .env
 ```
 
-Set:
+Set values:
 
 ```env
 BOT_TOKEN=
@@ -145,146 +130,125 @@ CHANNEL_ID=
 ADMIN_ID=
 LOG_LEVEL=info
 TMP_DIR=/tmp/media-downloader
+DATABASE_PATH=./data/media-engine.db
 MAX_CONCURRENT_DOWNLOADS=2
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX_REQUESTS=15
 DOWNLOAD_TIMEOUT_MS=900000
 UPLOAD_TIMEOUT_MS=900000
+PROVIDER_TIMEOUT_MS=120000
+DOWNLOAD_RETRY_ATTEMPTS=3
+UPLOAD_RETRY_ATTEMPTS=3
+RETRY_BASE_DELAY_MS=1000
 YT_DLP_PATH=yt-dlp
 FFMPEG_PATH=ffmpeg
 ```
 
-### 7. Build
+### 7. Build and run
 
 ```bash
 npm run build
-```
-
-### 8. Run
-
-```bash
 npm start
 ```
 
-### 9. Development mode
+### 8. Development mode
 
 ```bash
 npm run dev
 ```
 
-## Telegram Setup
+## Telegram setup
 
 1. Create a bot with BotFather
-2. Create a private Telegram Channel for storage
-3. Add the bot as an admin in the storage channel
-4. Get the channel numeric ID
-5. Set `CHANNEL_ID` in `.env`
-6. Set your Telegram user ID as `ADMIN_ID`
+2. Create a Telegram Channel that acts as permanent media storage
+3. Add the bot as channel admin
+4. Set the numeric channel ID in `.env`
+5. Set your Telegram user ID as `ADMIN_ID`
 
-## Bot Flow
+## Bot behavior
 
 ### `/start`
+Explains supported workflow.
 
-Shows welcome message and instructions.
+### Send a supported URL
+The bot:
 
-### User sends supported URL
+1. validates the URL
+2. detects the provider
+3. extracts metadata
+4. checks cache using normalized canonical URL
+5. returns cached media instantly if found
+6. shows available video and audio choices
+7. enqueues the download job
+8. downloads, uploads, stores metadata, and cleans up temporary files
 
-Flow:
+## Persistent storage
 
-1. validate URL
-2. resolve provider
-3. extract metadata
-4. check cache by canonical URL
-5. if cached, deliver from storage channel using `copyMessage`
-6. if not cached, show available format actions
-7. download selected format
-8. upload to Telegram storage channel
-9. persist metadata
-10. delete local temporary file
-11. deliver to user
+This project does not use JSON anymore.
 
-## Cache Strategy
+It uses SQLite through an internal repository abstraction for a production-grade local database baseline. That gives you transactional integrity now and an easy migration path later to PostgreSQL without touching business logic.
 
-Cache key is built from normalized original URL.
+Stored media metadata includes:
 
-If media already exists:
+- message_id
+- file_id
+- provider
+- original_url
+- title
+- duration
+- thumbnail
+- quality
+- mime_type
+- upload_date
+- checksum
 
-- skip download
-- skip processing
-- copy previously uploaded media from storage channel
+## Queue and concurrency
 
-This keeps VPS disk usage low and makes repeated requests fast.
+The engine uses an internal job queue with configurable concurrency.
 
-## Storage Model
+This protects the VPS from overload and keeps provider operations predictable. Shutdown is graceful: active jobs are awaited, new work is rejected, and temporary files are cleaned.
 
-Stored metadata includes:
+## Admin commands
 
-- `message_id`
-- `file_id`
-- `platform`
-- `original_url`
-- `title`
-- `duration`
-- `thumbnail`
-- `quality`
-- `mime_type`
-- `upload_date`
+- `/stats` for high-level counters
+- `/queue` for queue depth and active jobs
+- `/providers` for provider availability
+- `/errors` for recent runtime errors
+- `/health` for runtime health summary
 
-Current implementation uses local JSON persistence for metadata bootstrap. The storage boundary is abstract so it can later be replaced by PostgreSQL, Redis, or Telegram Drive internal services without breaking providers.
+## Troubleshooting
 
-## Admin Commands
+### yt-dlp fails immediately
+Check:
 
-- `/stats` shows users, cache entries, uploads, and errors
-- `/health` shows runtime health summary
+```bash
+yt-dlp --version
+which yt-dlp
+```
 
-Admin-only behavior is enforced by middleware.
+If missing, reinstall yt-dlp and update `YT_DLP_PATH`.
 
-## Error Handling
+### FFmpeg errors
+Check:
 
-Handled cases include:
+```bash
+ffmpeg -version
+which ffmpeg
+```
 
-- invalid URL
-- unsupported provider
-- private video
-- deleted media
-- age restriction
-- download failure
-- upload failure
-- timeout
-- network failure
+### Bot uploads fail
+Verify the bot is an admin in the storage channel and `CHANNEL_ID` is correct.
 
-## Logging
+### Database file cannot be created
+Make sure the process user can write to the `data/` directory or change `DATABASE_PATH`.
 
-Structured logs are written with Pino.
+### Providers return unavailable content
+Some platforms block private, deleted, geo-restricted, or age-restricted content. Those failures are surfaced as typed errors and logged with provider context.
 
-- console output for runtime visibility
-- file output hooks ready in logger layer
-- contextual fields for provider, URL, user, phase, and errors
+## Why this shape is right
 
-## Production Notes
+The bot interface is just one adapter.
 
-This foundation is designed for future Telegram Drive integration.
+The real asset here is the engine underneath: provider resolution, metadata extraction, cache lookup, download queue, retry policy, Telegram-backed storage, and persistence. That is the part Telegram Drive will reuse later.
 
-What is intentionally abstracted now:
-
-- provider registry
-- metadata repository
-- storage delivery
-- download pipeline
-- Telegram transport layer
-- cache lookup layer
-
-That means you can later plug in:
-
-- queue workers
-- PostgreSQL
-- Redis
-- object storage mirrors
-- admin dashboards
-- Telegram Drive indexing services
-
-without tearing apart the current design.
-
-## Recommended Next Step
-
-If you want this fully battle-hardened for scale, the next thing to add is a real persistent database and a job queue. For a clean foundation though, this version is the right shape: modular first, hacks never.
+That’s the right architecture. Anything tighter coupled would be short-term nonsense.

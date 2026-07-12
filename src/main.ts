@@ -1,29 +1,26 @@
-import { createBot } from './bot/createBot';
-import { config } from './config/env';
-import { logger } from './logs/logger';
+import { createBotApplication } from './bot/createBotApplication';
+import { logger } from './logger/logger';
 
 async function bootstrap(): Promise<void> {
-  const bot = createBot();
+  const app = await createBotApplication();
+  await app.start();
 
-  process.once('SIGINT', async () => {
-    logger.info('received SIGINT, stopping bot');
-    await bot.stop();
+  const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
+    logger.info({ signal }, 'shutdown signal received');
+    await app.stop();
     process.exit(0);
+  };
+
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT');
   });
 
-  process.once('SIGTERM', async () => {
-    logger.info('received SIGTERM, stopping bot');
-    await bot.stop();
-    process.exit(0);
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM');
   });
-
-  await bot.api.getMe();
-  await bot.start();
-
-  logger.info({ username: config.botToken.slice(0, 8) }, 'bot started');
 }
 
 bootstrap().catch((error: unknown) => {
-  logger.fatal({ error }, 'failed to bootstrap application');
+  logger.fatal({ error }, 'application bootstrap failed');
   process.exit(1);
 });

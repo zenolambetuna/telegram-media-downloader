@@ -5,62 +5,58 @@ export type SupportedPlatform =
   | 'twitter'
   | 'tiktok'
   | 'threads'
-  | 'vimeo'
   | 'reddit'
   | 'pinterest'
+  | 'vimeo'
   | 'soundcloud';
 
 export type MediaKind = 'video' | 'audio';
 
-export interface MediaMetadata {
-  id: string;
-  originalUrl: string;
-  canonicalUrl: string;
-  platform: SupportedPlatform;
-  title: string;
-  duration?: number;
-  uploader?: string;
-  thumbnail?: string;
-  filesize?: number;
-  webpageUrl?: string;
-  formats: MediaFormat[];
-}
-
 export interface MediaFormat {
   id: string;
+  kind: MediaKind;
   label: string;
   extension: string;
-  kind: MediaKind;
-  quality?: string;
+  quality: string;
   filesize?: number;
-  formatNote?: string;
   audioCodec?: string;
   videoCodec?: string;
+}
+
+export interface MediaMetadata {
+  id: string;
+  provider: SupportedPlatform;
+  originalUrl: string;
+  canonicalUrl: string;
+  title: string;
+  duration?: number;
+  thumbnail?: string;
+  uploader?: string;
+  filesize?: number;
+  formats: MediaFormat[];
 }
 
 export interface DownloadRequest {
   url: string;
   formatId: string;
-  kind: MediaKind;
   userId: number;
+  chatId: number;
 }
 
-export interface DownloadResult {
+export interface DownloadArtifact {
   filePath: string;
   fileName: string;
   mimeType: string;
   quality: string;
-  title: string;
-  thumbnail?: string;
-  duration?: number;
-  platform: SupportedPlatform;
-  originalUrl: string;
+  checksum: string;
+  metadata: MediaMetadata;
 }
 
-export interface CachedMediaRecord {
+export interface StoredMediaRecord {
+  id?: number;
   messageId: number;
   fileId: string;
-  platform: SupportedPlatform;
+  provider: SupportedPlatform;
   originalUrl: string;
   canonicalUrl: string;
   title: string;
@@ -69,4 +65,10 @@ export interface CachedMediaRecord {
   quality: string;
   mimeType: string;
   uploadDate: string;
+  checksum: string;
+}
+
+export interface QueueJobResult {
+  messageId: number;
+  cached: boolean;
 }

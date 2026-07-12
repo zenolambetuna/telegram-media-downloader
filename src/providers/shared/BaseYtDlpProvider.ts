@@ -1,10 +1,10 @@
 import path from 'node:path';
-import { DownloadRequest, DownloadResult, MediaFormat, MediaMetadata, SupportedPlatform } from '../../types/media';
+import { DownloadArtifact, DownloadRequest, MediaFormat, MediaMetadata, SupportedPlatform } from '../../types/media';
 import { MediaProvider } from '../../types/provider';
-import { YtDlpClient } from '../../core/YtDlpClient';
+import { YtDlpClient } from '../../downloader/YtDlpClient';
 import { normalizeUrl } from '../../utils/url';
 
-interface RawYtDlpFormat {
+interface RawFormat {
   format_id?: string;
   ext?: string;
   filesize?: number;
@@ -14,14 +14,15 @@ interface RawYtDlpFormat {
   resolution?: string;
 }
 
-interface RawYtDlpMetadata {
+interface RawMetadata {
   id: string;
   title: string;
   duration?: number;
   uploader?: string;
   thumbnail?: string;
   webpage_url?: string;
-  formats?: RawYtDlpFormat[];
+  filesize?: number;
+  formats?: RawFormat[];
 }
 
 export abstract class BaseYtDlpProvider implements MediaProvider {
@@ -32,75 +33,71 @@ export abstract class BaseYtDlpProvider implements MediaProvider {
   abstract supports(url: string): boolean;
 
   async getMetadata(url: string): Promise<MediaMetadata> {
-    const raw = (await this.ytDlpClient.fetchJson(url)) as RawYtDlpMetadata;
+    const raw = (await this.ytDlpClient.extract(url)) as RawMetadata;
     const formats = (raw.formats ?? [])
       .filter((format) => format.format_id && format.ext)
-      .map((format) => this.mapFormat(format));
+      .map((format) => this.mapFormat(format))
+      .filter((format, index, collection) => {
+        return collection.findIndex((item) => item.id === format.id) === index;
+      });
 
     return {
       id: raw.id,
+      provider: this.platform,
       originalUrl: url,
       canonicalUrl: normalizeUrl(raw.webpage_url ?? url),
-      platform: this.platform,
       title: raw.title,
       duration: raw.duration,
-      uploader: raw.uploader,
       thumbnail: raw.thumbnail,
-      webpageUrl: raw.webpage_url,
+      uploader: raw.uploader,
+      filesize: raw.filesize,
       formats,
     };
   }
 
-  async download(request: DownloadRequest): Promise<DownloadResult> {
+  async download(request: DownloadRequest): Promise<DownloadArtifact> {
     const metadata = await this.getMetadata(request.url);
-    const selected = metadata.formats.find((format) => format.id === request.formatId);
-    if (!selected) {
-      throw new Error('Requested format is not available');
+    const format = metadata.formats.find((item) => item.id === request.formatId);
+    if (!format) {
+      throw new Error('selected format is unavailable');
     }
 
-    const outputDir = path.join(process.cwd(), 'tmp', String(request.userId), metadata.id);
-    const filePath = await this.ytDlpClient.download(request.url, request.formatId, outputDir);
+    const outputDir = path.join(process.cwd(), 'tmp', String(request.userId), metadata.id, format.id);
+    const filePath = await this.ytDlpClient.download(request.url, format.id, outputDir);
 
     return {
       filePath,
       fileName: path.basename(filePath),
-      mimeType: this.inferMimeType(selected),
-      quality: selected.quality ?? selected.label,
-      title: metadata.title,
-      thumbnail: metadata.thumbnail,
-      duration: metadata.duration,
-      platform: this.platform,
-      originalUrl: request.url,
+      mimeType: this.resolveMimeType(format),
+      quality: format.quality,
+      checksum: '',
+      metadata,
     };
   }
 
-  private mapFormat(format: RawYtDlpFormat): MediaFormat {
-    const isAudioOnly = format.vcodec === 'none';
-    const quality = format.resolution ?? format.format_note ?? format.ext ?? 'unknown';
+  async healthCheck(): Promise<boolean> {
+    return true;
+  }
 
+  private mapFormat(format: RawFormat): MediaFormat {
+    const isAudio = format.vcodec === 'none';
+    const quality = format.resolution ?? format.format_note ?? format.ext ?? 'unknown';
     return {
       id: format.format_id ?? 'unknown',
-      label: `${isAudioOnly ? 'Audio' : 'Video'} ${quality}`,
+      kind: isAudio ? 'audio' : 'video',
+      label: `${isAudio ? 'Audio' : 'Video'} ${quality}`,
       extension: format.ext ?? 'bin',
-      kind: isAudioOnly ? 'audio' : 'video',
       quality,
       filesize: format.filesize,
-      formatNote: format.format_note,
       audioCodec: format.acodec,
       videoCodec: format.vcodec,
     };
   }
 
-  private inferMimeType(format: MediaFormat): string {
+  private resolveMimeType(format: MediaFormat): string {
     if (format.kind === 'audio') {
-      if (format.extension === 'mp3') {
-        return 'audio/mpeg';
-      }
-      return `audio/${format.extension}`;
+      return format.extension === 'mp3' ? 'audio/mpeg' : `audio/${format.extension}`;
     }
-    if (format.extension === 'mp4') {
-      return 'video/mp4';
-    }
-    return `video/${format.extension}`;
+    return format.extension === 'mp4' ? 'video/mp4' : `video/${format.extension}`;
   }
 }

@@ -1,41 +1,26 @@
 import dotenv from 'dotenv';
+import { z } from 'zod';
 
 dotenv.config();
 
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${name}`);
-  }
-  return value;
-}
+const envSchema = z.object({
+  BOT_TOKEN: z.string().min(1),
+  CHANNEL_ID: z.string().min(1),
+  ADMIN_ID: z.coerce.number().int().positive(),
+  LOG_LEVEL: z.string().default('info'),
+  TMP_DIR: z.string().default('/tmp/media-downloader'),
+  DATABASE_PATH: z.string().default('./data/media-engine.db'),
+  MAX_CONCURRENT_DOWNLOADS: z.coerce.number().int().positive().default(2),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  RATE_LIMIT_MAX_REQUESTS: z.coerce.number().int().positive().default(15),
+  DOWNLOAD_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
+  UPLOAD_TIMEOUT_MS: z.coerce.number().int().positive().default(900_000),
+  PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
+  DOWNLOAD_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  UPLOAD_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(3),
+  RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(1000),
+  YT_DLP_PATH: z.string().default('yt-dlp'),
+  FFMPEG_PATH: z.string().default('ffmpeg'),
+});
 
-function parseNumber(name: string, fallback?: number): number {
-  const value = process.env[name];
-  if (!value && fallback !== undefined) {
-    return fallback;
-  }
-  if (!value) {
-    throw new Error(`Missing required numeric environment variable: ${name}`);
-  }
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) {
-    throw new Error(`Invalid numeric environment variable: ${name}`);
-  }
-  return parsed;
-}
-
-export const config = {
-  botToken: requireEnv('BOT_TOKEN'),
-  channelId: requireEnv('CHANNEL_ID'),
-  adminId: parseNumber('ADMIN_ID'),
-  logLevel: process.env.LOG_LEVEL ?? 'info',
-  tmpDir: process.env.TMP_DIR ?? '/tmp/media-downloader',
-  maxConcurrentDownloads: parseNumber('MAX_CONCURRENT_DOWNLOADS', 2),
-  rateLimitWindowMs: parseNumber('RATE_LIMIT_WINDOW_MS', 60_000),
-  rateLimitMaxRequests: parseNumber('RATE_LIMIT_MAX_REQUESTS', 15),
-  downloadTimeoutMs: parseNumber('DOWNLOAD_TIMEOUT_MS', 900_000),
-  uploadTimeoutMs: parseNumber('UPLOAD_TIMEOUT_MS', 900_000),
-  ytDlpPath: process.env.YT_DLP_PATH ?? 'yt-dlp',
-  ffmpegPath: process.env.FFMPEG_PATH ?? 'ffmpeg',
-} as const;
+export const config = envSchema.parse(process.env);

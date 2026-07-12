@@ -1,7 +1,7 @@
 {
   "name": "telegram-media-downloader",
-  "version": "1.0.0",
-  "description": "Production-ready Telegram Media Downloader Bot for the Telegram Drive ecosystem",
+  "version": "2.0.0",
+  "description": "Production-ready Telegram Media Downloader Engine for the Telegram Drive ecosystem",
   "main": "dist/main.js",
   "type": "commonjs",
   "scripts": {
@@ -17,17 +17,20 @@
     "yt-dlp",
     "ffmpeg",
     "grammy",
-    "media-downloader"
+    "media-downloader",
+    "telegram-drive"
   ],
-  "author": "",
   "license": "MIT",
   "dependencies": {
+    "better-sqlite3": "^11.8.1",
     "dotenv": "^16.4.5",
     "grammy": "^1.38.3",
     "pino": "^9.3.2",
-    "pino-pretty": "^11.2.2"
+    "pino-pretty": "^11.2.2",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^22.7.4",
     "eslint": "^9.12.0",
     "prettier": "^3.3.3",
