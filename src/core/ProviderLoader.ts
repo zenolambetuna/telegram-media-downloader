@@ -7,10 +7,11 @@ import { ProviderFactory } from './ProviderFactory';
 const NON_PROVIDER_DIRS = new Set(['shared']);
 
 /**
- * ProviderLoader auto-discovers provider plugins. At startup it scans the
- * providers directory, imports each folder's manifest (its index module), and
- * builds provider instances through the factory. Adding a provider requires
- * only creating a new folder with an index manifest. No core file changes.
+ * ProviderLoader auto-discovers provider plugins at runtime. It scans the
+ * providers directory, dynamically imports each folder's default manifest, and
+ * builds provider instances through the factory. Dropping a new provider
+ * folder into src/providers (compiled to dist/providers) and restarting is the
+ * entire installation process. No other file is ever touched.
  */
 export class ProviderLoader {
   constructor(private readonly factory: ProviderFactory) {}
@@ -45,7 +46,10 @@ export class ProviderLoader {
         const provider = this.factory.create(manifest, entry);
         if (provider) {
           providers.push(provider);
-          logger.info({ providerId: provider.id, entry }, 'provider discovered');
+          logger.info(
+            { providerId: provider.metadata.id, version: provider.metadata.version, entry },
+            'provider discovered',
+          );
         }
       } catch (error) {
         logger.warn({ entry, error }, 'provider discovery failed for folder');

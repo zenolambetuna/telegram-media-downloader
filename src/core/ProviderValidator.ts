@@ -1,4 +1,6 @@
 import { MediaProvider } from '../types/provider';
+import { ENGINE_VERSION } from './engineInfo';
+import { satisfies } from '../utils/semver';
 
 export interface ValidationIssue {
   providerId: string;
@@ -11,9 +13,9 @@ export interface ValidationOutcome {
 }
 
 /**
- * ProviderValidator enforces plugin integrity before a provider is allowed
- * into the registry. It rejects providers with missing identity, duplicate
- * ids, duplicate domains, or missing handlers.
+ * ProviderValidator enforces plugin integrity before a provider enters the
+ * registry. It checks required metadata, duplicate ids, duplicate domains,
+ * engine version compatibility, and cross-provider dependency resolution.
  */
 export class ProviderValidator {
   validate(providers: MediaProvider[]): ValidationOutcome {
@@ -22,16 +24,29 @@ export class ProviderValidator {
     const seenIds = new Set<string>();
     const seenDomains = new Map<string, string>();
 
+    const structurallyValid: MediaProvider[] = [];
     for (const provider of providers) {
       const reason = this.inspect(provider, seenIds, seenDomains);
       if (reason) {
-        rejected.push({ providerId: provider?.id ?? 'unknown', reason });
+        rejected.push({ providerId: provider?.metadata?.id ?? 'unknown', reason });
         continue;
       }
+      seenIds.add(provider.metadata.id);
+      for (const domain of provider.metadata.domains) {
+        seenDomains.set(domain.toLowerCase(), provider.metadata.id);
+      }
+      structurallyValid.push(provider);
+    }
 
-      seenIds.add(provider.id);
-      for (const domain of provider.domains) {
-        seenDomains.set(domain.toLowerCase(), provider.id);
+    const availableIds = new Set(structurallyValid.map((provider) => provider.metadata.id));
+    for (const provider of structurallyValid) {
+      const missing = provider.metadata.dependencies.filter((dep) => !availableIds.has(dep));
+      if (missing.length > 0) {
+        rejected.push({
+          providerId: provider.metadata.id,
+          reason: `missing dependencies: ${missing.join(', ')}`,
+        });
+        continue;
       }
       valid.push(provider);
     }
@@ -44,16 +59,20 @@ export class ProviderValidator {
     seenIds: Set<string>,
     seenDomains: Map<string, string>,
   ): string | null {
-    if (!provider || !provider.id) {
+    const meta = provider?.metadata;
+    if (!meta || !meta.id) {
       return 'missing provider id';
     }
-    if (!provider.name) {
+    if (!meta.name) {
       return 'missing provider name';
     }
-    if (typeof provider.priority !== 'number') {
+    if (!meta.version) {
+      return 'missing provider version';
+    }
+    if (typeof meta.priority !== 'number') {
       return 'missing or invalid priority';
     }
-    if (!Array.isArray(provider.domains) || provider.domains.length === 0) {
+    if (!Array.isArray(meta.domains) || meta.domains.length === 0) {
       return 'missing supported domains';
     }
     if (typeof provider.supports !== 'function') {
@@ -62,13 +81,16 @@ export class ProviderValidator {
     if (typeof provider.healthCheck !== 'function') {
       return 'missing health check handler';
     }
-    if (!provider.capabilities) {
+    if (!meta.capabilities) {
       return 'missing capabilities';
     }
-    if (seenIds.has(provider.id)) {
-      return `duplicate provider id: ${provider.id}`;
+    if (!satisfies(ENGINE_VERSION, meta.engineCompatibility)) {
+      return `incompatible engine: needs ${meta.engineCompatibility}, engine is ${ENGINE_VERSION}`;
     }
-    for (const domain of provider.domains) {
+    if (seenIds.has(meta.id)) {
+      return `duplicate provider id: ${meta.id}`;
+    }
+    for (const domain of meta.domains) {
       const owner = seenDomains.get(domain.toLowerCase());
       if (owner) {
         return `duplicate domain ${domain} already owned by ${owner}`;

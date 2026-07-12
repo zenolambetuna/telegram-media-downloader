@@ -7,9 +7,13 @@ class TikTokProvider extends BaseProvider {
     super({
       id: 'tiktok',
       name: 'TikTok',
+      version: '1.0.0',
+      author: 'core',
+      homepage: 'https://tiktok.com',
       priority: 80,
       domains: ['tiktok.com', 'www.tiktok.com', 'vm.tiktok.com'],
       pattern: /tiktok\.com/i,
+      engineCompatibility: '^1.0.0',
       capabilities: defineCapabilities({
         supportsVideo: true,
         supportsAudio: true,
@@ -20,6 +24,7 @@ class TikTokProvider extends BaseProvider {
 }
 
 const manifest: ProviderManifest = {
+  manifestVersion: 1,
   create: () => new TikTokProvider(),
 };
 

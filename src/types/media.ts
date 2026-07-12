@@ -1,14 +1,10 @@
-export type SupportedPlatform =
-  | 'youtube'
-  | 'facebook'
-  | 'instagram'
-  | 'twitter'
-  | 'tiktok'
-  | 'threads'
-  | 'reddit'
-  | 'pinterest'
-  | 'vimeo'
-  | 'soundcloud';
+/**
+ * Platform identity is now a runtime string, not a compile-time union.
+ * This is the single change that unlocks true zero-core-edit providers:
+ * adding a new provider never requires editing this type. The alias is kept
+ * for backward compatibility so every existing import keeps working.
+ */
+export type SupportedPlatform = string;
 
 export type MediaKind = 'video' | 'audio';
 

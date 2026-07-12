@@ -7,9 +7,13 @@ class SoundCloudProvider extends BaseProvider {
     super({
       id: 'soundcloud',
       name: 'SoundCloud',
+      version: '1.0.0',
+      author: 'core',
+      homepage: 'https://soundcloud.com',
       priority: 70,
       domains: ['soundcloud.com', 'www.soundcloud.com', 'on.soundcloud.com'],
       pattern: /soundcloud\.com/i,
+      engineCompatibility: '^1.0.0',
       capabilities: defineCapabilities({
         supportsAudio: true,
         supportsPlaylist: true,
@@ -19,6 +23,7 @@ class SoundCloudProvider extends BaseProvider {
 }
 
 const manifest: ProviderManifest = {
+  manifestVersion: 1,
   create: () => new SoundCloudProvider(),
 };
 

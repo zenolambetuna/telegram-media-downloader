@@ -4,8 +4,7 @@ import { EngineMetadata } from '../types/download';
 
 /**
  * MediaInspector resolves the provider for a URL and delegates all metadata
- * work to the Universal Download Engine. It exists so the bot layer does not
- * touch the engine or registry directly.
+ * work to the Universal Download Engine.
  */
 export class MediaInspector {
   constructor(

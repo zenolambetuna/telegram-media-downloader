@@ -1,36 +1,45 @@
-import { MediaProvider, ProviderCapabilities } from '../../types/provider';
-import { SupportedPlatform } from '../../types/media';
+import { MediaProvider, ProviderCapabilities, ProviderConfigSchema, ProviderMetadata } from '../../types/provider';
 
 export interface BaseProviderConfig {
-  id: SupportedPlatform;
+  id: string;
   name: string;
+  version: string;
+  author: string;
+  homepage: string;
   priority: number;
   domains: string[];
   pattern: RegExp;
   capabilities: ProviderCapabilities;
+  configSchema?: ProviderConfigSchema;
+  dependencies?: string[];
+  engineCompatibility?: string;
 }
 
 /**
- * BaseProvider is the single base class every provider inherits. A concrete
- * provider passes a config describing its identity, domains, URL pattern, and
- * capabilities. It performs NO downloading, NO yt-dlp, NO ffmpeg, and NO
- * Telegram work.
+ * BaseProvider is the single base class every provider inherits. It turns a
+ * declarative config into runtime ProviderMetadata. Providers perform NO
+ * downloading, yt-dlp, ffmpeg, or Telegram work. Everything is metadata plus a
+ * URL matcher.
  */
 export abstract class BaseProvider implements MediaProvider {
-  readonly id: SupportedPlatform;
-  readonly name: string;
-  readonly priority: number;
-  readonly domains: string[];
-  readonly capabilities: ProviderCapabilities;
+  readonly metadata: ProviderMetadata;
   private readonly pattern: RegExp;
 
   protected constructor(config: BaseProviderConfig) {
-    this.id = config.id;
-    this.name = config.name;
-    this.priority = config.priority;
-    this.domains = config.domains;
-    this.capabilities = config.capabilities;
     this.pattern = config.pattern;
+    this.metadata = {
+      id: config.id,
+      name: config.name,
+      version: config.version,
+      author: config.author,
+      homepage: config.homepage,
+      priority: config.priority,
+      domains: config.domains,
+      capabilities: config.capabilities,
+      configSchema: config.configSchema ?? [],
+      dependencies: config.dependencies ?? [],
+      engineCompatibility: config.engineCompatibility ?? '*',
+    };
   }
 
   supports(url: string): boolean {

@@ -7,9 +7,13 @@ class InstagramProvider extends BaseProvider {
     super({
       id: 'instagram',
       name: 'Instagram',
+      version: '1.0.0',
+      author: 'core',
+      homepage: 'https://instagram.com',
       priority: 80,
       domains: ['instagram.com', 'www.instagram.com'],
       pattern: /instagram\.com/i,
+      engineCompatibility: '^1.0.0',
       capabilities: defineCapabilities({
         supportsVideo: true,
         supportsAudio: true,
@@ -23,6 +27,7 @@ class InstagramProvider extends BaseProvider {
 }
 
 const manifest: ProviderManifest = {
+  manifestVersion: 1,
   create: () => new InstagramProvider(),
 };
 

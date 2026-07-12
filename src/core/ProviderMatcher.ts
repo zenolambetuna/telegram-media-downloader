@@ -10,6 +10,6 @@ export class ProviderMatcher {
     if (candidates.length === 0) {
       return null;
     }
-    return candidates.sort((left, right) => right.priority - left.priority)[0];
+    return candidates.sort((left, right) => right.metadata.priority - left.metadata.priority)[0];
   }
 }

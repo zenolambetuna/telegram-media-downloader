@@ -13,10 +13,6 @@ const BASE_CAPABILITIES: ProviderCapabilities = {
   supportsLogin: false,
 };
 
-/**
- * Builds a full capabilities object from a partial override. Anything not
- * specified defaults to false, so providers only declare what they truly do.
- */
 export function defineCapabilities(overrides: Partial<ProviderCapabilities>): ProviderCapabilities {
   return { ...BASE_CAPABILITIES, ...overrides };
 }

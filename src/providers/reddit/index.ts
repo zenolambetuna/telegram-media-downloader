@@ -7,9 +7,13 @@ class RedditProvider extends BaseProvider {
     super({
       id: 'reddit',
       name: 'Reddit',
+      version: '1.0.0',
+      author: 'core',
+      homepage: 'https://reddit.com',
       priority: 70,
       domains: ['reddit.com', 'www.reddit.com', 'redd.it', 'v.redd.it'],
       pattern: /(?:reddit\.com|redd\.it)/i,
+      engineCompatibility: '^1.0.0',
       capabilities: defineCapabilities({
         supportsVideo: true,
         supportsAudio: true,
@@ -19,6 +23,7 @@ class RedditProvider extends BaseProvider {
 }
 
 const manifest: ProviderManifest = {
+  manifestVersion: 1,
   create: () => new RedditProvider(),
 };
 

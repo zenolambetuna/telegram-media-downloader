@@ -7,9 +7,13 @@ class PinterestProvider extends BaseProvider {
     super({
       id: 'pinterest',
       name: 'Pinterest',
+      version: '1.0.0',
+      author: 'core',
+      homepage: 'https://pinterest.com',
       priority: 60,
       domains: ['pinterest.com', 'www.pinterest.com', 'pin.it'],
       pattern: /(?:pinterest\.|pin\.it)/i,
+      engineCompatibility: '^1.0.0',
       capabilities: defineCapabilities({
         supportsVideo: true,
       }),
@@ -18,6 +22,7 @@ class PinterestProvider extends BaseProvider {
 }
 
 const manifest: ProviderManifest = {
+  manifestVersion: 1,
   create: () => new PinterestProvider(),
 };
 
