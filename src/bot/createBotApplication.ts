@@ -14,17 +14,11 @@ import { FFmpegService } from '../downloader/FFmpegService';
 import { ChecksumService } from '../downloader/ChecksumService';
 import { TempFileManager } from '../downloader/TempFileManager';
 import { DownloadEngine } from '../downloader/DownloadEngine';
+import { ProviderLoader } from '../core/ProviderLoader';
+import { ProviderFactory } from '../core/ProviderFactory';
+import { ProviderValidator } from '../core/ProviderValidator';
+import { ProviderMatcher } from '../core/ProviderMatcher';
 import { ProviderRegistry } from '../core/ProviderRegistry';
-import { YouTubeProvider } from '../providers/youtube/YouTubeProvider';
-import { FacebookProvider } from '../providers/facebook/FacebookProvider';
-import { InstagramProvider } from '../providers/instagram/InstagramProvider';
-import { TikTokProvider } from '../providers/tiktok/TikTokProvider';
-import { TwitterProvider } from '../providers/twitter/TwitterProvider';
-import { ThreadsProvider } from '../providers/threads/ThreadsProvider';
-import { RedditProvider } from '../providers/reddit/RedditProvider';
-import { PinterestProvider } from '../providers/pinterest/PinterestProvider';
-import { VimeoProvider } from '../providers/vimeo/VimeoProvider';
-import { SoundCloudProvider } from '../providers/soundcloud/SoundCloudProvider';
 import { MediaInspector } from '../core/MediaInspector';
 import { MediaSender } from '../telegram/MediaSender';
 import { UploadManager } from '../telegram/UploadManager';
@@ -38,21 +32,6 @@ import { BotContext, SessionData } from '../types/bot';
 import { AppError } from '../types/errors';
 import { assertValidUrl } from '../utils/url';
 import { rateLimit } from './rateLimit';
-
-function createProviders() {
-  return [
-    new YouTubeProvider(),
-    new FacebookProvider(),
-    new InstagramProvider(),
-    new TikTokProvider(),
-    new TwitterProvider(),
-    new ThreadsProvider(),
-    new RedditProvider(),
-    new PinterestProvider(),
-    new VimeoProvider(),
-    new SoundCloudProvider(),
-  ];
-}
 
 function initialSession(): SessionData {
   return {};
@@ -83,7 +62,13 @@ export async function createBotApplication(): Promise<{
     tempFileManager,
   );
 
-  const providerRegistry = new ProviderRegistry(createProviders());
+  const providerRegistry = new ProviderRegistry(
+    new ProviderLoader(new ProviderFactory()),
+    new ProviderValidator(),
+    new ProviderMatcher(),
+  );
+  await providerRegistry.initialize();
+
   const mediaInspector = new MediaInspector(providerRegistry, downloadEngine);
 
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
@@ -131,7 +116,7 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply('send a supported media URL. the Universal Download Engine inspects it, shows real qualities, downloads and merges, then the Storage Engine stores it in your Telegram Drive channel and cleans up.');
+    await ctx.reply('send a supported media URL. the plugin registry resolves the provider, the Universal Download Engine downloads and merges, and the Storage Engine stores it in your Telegram Drive channel.');
   });
 
   bot.command('stats', async (ctx) => {
@@ -164,10 +149,11 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-    const health = await Promise.all(
-      providerRegistry.list().map(async (provider) => `${provider.platform}: ${await provider.healthCheck() ? 'ok' : 'down'}`),
-    );
-    await ctx.reply(health.join('\n'));
+    const health = providerRegistry.health();
+    const loaded = health.loaded.map((item) => `${item.name} (${item.priority})`).join('\n') || 'none';
+    const disabled = health.disabled.map((item) => item.name).join(', ') || 'none';
+    const failed = health.failed.map((item) => `${item.providerId}: ${item.reason}`).join('\n') || 'none';
+    await ctx.reply(`loaded:\n${loaded}\n\ndisabled: ${disabled}\n\nfailed:\n${failed}`);
   });
 
   bot.command('errors', async (ctx) => {
