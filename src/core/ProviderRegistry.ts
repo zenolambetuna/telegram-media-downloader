@@ -1,5 +1,6 @@
 import { MediaProvider } from '../types/provider';
 import { AppError } from '../types/errors';
+import { SupportedPlatform } from '../types/media';
 
 export class ProviderRegistry {
   constructor(private readonly providers: MediaProvider[]) {}
@@ -10,6 +11,10 @@ export class ProviderRegistry {
       throw new AppError('Unsupported provider', 'UNSUPPORTED_PROVIDER');
     }
     return provider;
+  }
+
+  platformFor(url: string): SupportedPlatform {
+    return this.resolve(url).platform;
   }
 
   list(): MediaProvider[] {

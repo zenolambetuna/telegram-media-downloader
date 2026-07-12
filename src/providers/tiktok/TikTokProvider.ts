@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class TikTokProvider extends BaseYtDlpProvider {
+export class TikTokProvider extends BaseProvider {
   readonly platform = 'tiktok' as const;
-
-  supports(url: string): boolean {
-    return /tiktok\.com/i.test(url);
-  }
+  protected readonly pattern = /tiktok\.com/i;
 }

@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class ThreadsProvider extends BaseYtDlpProvider {
+export class ThreadsProvider extends BaseProvider {
   readonly platform = 'threads' as const;
-
-  supports(url: string): boolean {
-    return /threads\.net/i.test(url);
-  }
+  protected readonly pattern = /threads\.net/i;
 }

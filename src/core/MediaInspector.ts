@@ -1,18 +1,20 @@
 import { ProviderRegistry } from './ProviderRegistry';
-import { MediaMetadata } from '../types/media';
-import { normalizeUrl } from '../utils/url';
-import { withTimeout } from '../utils/time';
-import { config } from '../config/env';
+import { DownloadEngine } from '../downloader/DownloadEngine';
+import { EngineMetadata } from '../types/download';
 
+/**
+ * MediaInspector resolves the provider for a URL and delegates all metadata
+ * work to the Universal Download Engine. It exists so the bot layer does not
+ * touch the engine or registry directly.
+ */
 export class MediaInspector {
-  constructor(private readonly providerRegistry: ProviderRegistry) {}
+  constructor(
+    private readonly providerRegistry: ProviderRegistry,
+    private readonly downloadEngine: DownloadEngine,
+  ) {}
 
-  async inspect(url: string): Promise<MediaMetadata> {
-    const provider = this.providerRegistry.resolve(url);
-    const metadata = await withTimeout(provider.getMetadata(url), config.PROVIDER_TIMEOUT_MS, 'provider timeout');
-    return {
-      ...metadata,
-      canonicalUrl: normalizeUrl(metadata.canonicalUrl),
-    };
+  async inspect(url: string): Promise<EngineMetadata> {
+    const platform = this.providerRegistry.platformFor(url);
+    return await this.downloadEngine.inspect(url, platform);
   }
 }

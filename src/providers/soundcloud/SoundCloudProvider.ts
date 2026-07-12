@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class SoundCloudProvider extends BaseYtDlpProvider {
+export class SoundCloudProvider extends BaseProvider {
   readonly platform = 'soundcloud' as const;
-
-  supports(url: string): boolean {
-    return /soundcloud\.com/i.test(url);
-  }
+  protected readonly pattern = /soundcloud\.com/i;
 }

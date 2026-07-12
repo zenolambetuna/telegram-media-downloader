@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class VimeoProvider extends BaseYtDlpProvider {
+export class VimeoProvider extends BaseProvider {
   readonly platform = 'vimeo' as const;
-
-  supports(url: string): boolean {
-    return /vimeo\.com/i.test(url);
-  }
+  protected readonly pattern = /vimeo\.com/i;
 }

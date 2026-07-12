@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class YouTubeProvider extends BaseYtDlpProvider {
+export class YouTubeProvider extends BaseProvider {
   readonly platform = 'youtube' as const;
-
-  supports(url: string): boolean {
-    return /(?:youtube\.com|youtu\.be)/i.test(url);
-  }
+  protected readonly pattern = /(?:youtube\.com|youtu\.be)/i;
 }

@@ -8,6 +8,12 @@ import { ErrorRepository } from '../storage/ErrorRepository';
 import { CounterRepository } from '../storage/CounterRepository';
 import { ProcessRunner } from '../downloader/ProcessRunner';
 import { YtDlpClient } from '../downloader/YtDlpClient';
+import { FormatResolver } from '../downloader/FormatResolver';
+import { MetadataService } from '../downloader/MetadataService';
+import { FFmpegService } from '../downloader/FFmpegService';
+import { ChecksumService } from '../downloader/ChecksumService';
+import { TempFileManager } from '../downloader/TempFileManager';
+import { DownloadEngine } from '../downloader/DownloadEngine';
 import { ProviderRegistry } from '../core/ProviderRegistry';
 import { YouTubeProvider } from '../providers/youtube/YouTubeProvider';
 import { FacebookProvider } from '../providers/facebook/FacebookProvider';
@@ -20,7 +26,6 @@ import { PinterestProvider } from '../providers/pinterest/PinterestProvider';
 import { VimeoProvider } from '../providers/vimeo/VimeoProvider';
 import { SoundCloudProvider } from '../providers/soundcloud/SoundCloudProvider';
 import { MediaInspector } from '../core/MediaInspector';
-import { DownloadEngine } from '../downloader/DownloadEngine';
 import { MediaSender } from '../telegram/MediaSender';
 import { UploadManager } from '../telegram/UploadManager';
 import { MessageManager } from '../telegram/MessageManager';
@@ -34,18 +39,18 @@ import { AppError } from '../types/errors';
 import { assertValidUrl } from '../utils/url';
 import { rateLimit } from './rateLimit';
 
-function createProviders(ytDlpClient: YtDlpClient) {
+function createProviders() {
   return [
-    new YouTubeProvider(ytDlpClient),
-    new FacebookProvider(ytDlpClient),
-    new InstagramProvider(ytDlpClient),
-    new TikTokProvider(ytDlpClient),
-    new TwitterProvider(ytDlpClient),
-    new ThreadsProvider(ytDlpClient),
-    new RedditProvider(ytDlpClient),
-    new PinterestProvider(ytDlpClient),
-    new VimeoProvider(ytDlpClient),
-    new SoundCloudProvider(ytDlpClient),
+    new YouTubeProvider(),
+    new FacebookProvider(),
+    new InstagramProvider(),
+    new TikTokProvider(),
+    new TwitterProvider(),
+    new ThreadsProvider(),
+    new RedditProvider(),
+    new PinterestProvider(),
+    new VimeoProvider(),
+    new SoundCloudProvider(),
   ];
 }
 
@@ -65,9 +70,21 @@ export async function createBotApplication(): Promise<{
 
   const processRunner = new ProcessRunner();
   const ytDlpClient = new YtDlpClient(processRunner);
-  const providerRegistry = new ProviderRegistry(createProviders(ytDlpClient));
-  const mediaInspector = new MediaInspector(providerRegistry);
-  const downloadEngine = new DownloadEngine(providerRegistry);
+  const formatResolver = new FormatResolver();
+  const metadataService = new MetadataService(ytDlpClient, formatResolver);
+  const ffmpegService = new FFmpegService(processRunner);
+  const checksumService = new ChecksumService();
+  const tempFileManager = new TempFileManager();
+  const downloadEngine = new DownloadEngine(
+    metadataService,
+    ytDlpClient,
+    ffmpegService,
+    checksumService,
+    tempFileManager,
+  );
+
+  const providerRegistry = new ProviderRegistry(createProviders());
+  const mediaInspector = new MediaInspector(providerRegistry, downloadEngine);
 
   const bot = new Bot<BotContext>(config.BOT_TOKEN);
 
@@ -78,8 +95,16 @@ export async function createBotApplication(): Promise<{
   const thumbnailUploader = new ThumbnailUploader(bot.api, thumbnailRepository);
   const telegramStorage = new TelegramStorage(uploadManager, messageManager, fileCache, thumbnailUploader);
 
-  const pipeline = new MediaPipeline(downloadEngine, telegramStorage, counterRepository, errorRepository);
+  const pipeline = new MediaPipeline(
+    providerRegistry,
+    downloadEngine,
+    telegramStorage,
+    counterRepository,
+    errorRepository,
+  );
   const queue = new DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS);
+
+  await downloadEngine.recoverOrphans();
 
   bot.use(session({ initial: initialSession }));
 
@@ -106,7 +131,7 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply('send a supported media URL. i inspect it, show real formats, queue the job, store it in your Telegram Drive channel through the Storage Engine, then clean the temp file.');
+    await ctx.reply('send a supported media URL. the Universal Download Engine inspects it, shows real qualities, downloads and merges, then the Storage Engine stores it in your Telegram Drive channel and cleans up.');
   });
 
   bot.command('stats', async (ctx) => {
@@ -130,7 +155,6 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-
     const stats = queue.stats();
     await ctx.reply(`pending: ${stats.pending}\nactive: ${stats.active}\nconcurrency: ${stats.concurrency}\nshutting down: ${stats.shuttingDown}`);
   });
@@ -140,7 +164,6 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-
     const health = await Promise.all(
       providerRegistry.list().map(async (provider) => `${provider.platform}: ${await provider.healthCheck() ? 'ok' : 'down'}`),
     );
@@ -152,13 +175,11 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-
     const latest = await errorRepository.latest(5);
     if (latest.length === 0) {
       await ctx.reply('no recent errors');
       return;
     }
-
     await ctx.reply(latest.map((item) => `[${item.code}] ${item.message}`).join('\n'));
   });
 
@@ -167,7 +188,6 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-
     await ctx.reply('healthy');
   });
 
@@ -175,21 +195,21 @@ export async function createBotApplication(): Promise<{
     const text = ctx.message.text.trim();
     assertValidUrl(text);
 
-    const metadata = await mediaInspector.inspect(text);
+    const inspected = await mediaInspector.inspect(text);
     ctx.session.pendingUrl = text;
-    ctx.session.pendingMetadata = metadata;
+    ctx.session.pendingMetadata = inspected.metadata;
 
     const keyboard = new InlineKeyboard();
-    if (metadata.formats.some((item) => item.kind === 'video')) {
+    if (inspected.formats.some((item) => item.kind === 'video')) {
       keyboard.text('🎥 Video', 'choose:video');
     }
-    if (metadata.formats.some((item) => item.kind === 'audio')) {
+    if (inspected.formats.some((item) => item.kind === 'audio')) {
       keyboard.text('🎵 Audio', 'choose:audio');
     }
     keyboard.text('❌ Cancel', 'choose:cancel');
 
     await ctx.reply(
-      `title: ${metadata.title}\nduration: ${metadata.duration ?? 'unknown'}\nuploader: ${metadata.uploader ?? 'unknown'}\nfile size: ${metadata.filesize ?? 'unknown'}`,
+      `title: ${inspected.metadata.title}\nduration: ${inspected.metadata.duration ?? 'unknown'}\nuploader: ${inspected.metadata.uploader ?? 'unknown'}\nfile size: ${inspected.metadata.filesize ?? 'unknown'}`,
       { reply_markup: keyboard },
     );
   });
@@ -220,7 +240,7 @@ export async function createBotApplication(): Promise<{
     }
     keyboard.text('❌ Cancel', 'choose:cancel');
 
-    await ctx.editMessageText(`pick ${action} format`, { reply_markup: keyboard });
+    await ctx.editMessageText(`pick ${action} quality`, { reply_markup: keyboard });
     await ctx.answerCallbackQuery();
   });
 
@@ -238,11 +258,33 @@ export async function createBotApplication(): Promise<{
 
     await ctx.editMessageText('queued');
 
+    const stageMessages: Record<string, string> = {
+      fetching_metadata: 'fetching metadata...',
+      resolving_formats: 'resolving formats...',
+      downloading: 'downloading...',
+      merging: 'merging...',
+      processing: 'processing...',
+      uploading: 'uploading...',
+      finished: 'finishing...',
+    };
+
     void queue
       .add(`${userId}:${Date.now()}`, async () => {
-        await ctx.api.sendMessage(chatId, 'downloading...');
-        const result = await pipeline.execute({ url, formatId, userId, chatId });
-        await ctx.api.sendMessage(chatId, result.cached ? 'served from cache' : 'uploaded from fresh download');
+        let lastStage = '';
+        const result = await pipeline.execute({
+          url,
+          formatId,
+          userId,
+          chatId,
+          onProgress: (update) => {
+            const message = stageMessages[update.stage];
+            if (message && update.stage !== lastStage) {
+              lastStage = update.stage;
+              void ctx.api.sendMessage(chatId, message);
+            }
+          },
+        });
+        await ctx.api.sendMessage(chatId, result.cached ? 'served from cache' : 'done');
         return result;
       })
       .catch(async (error) => {

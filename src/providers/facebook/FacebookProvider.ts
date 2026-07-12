@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class FacebookProvider extends BaseYtDlpProvider {
+export class FacebookProvider extends BaseProvider {
   readonly platform = 'facebook' as const;
-
-  supports(url: string): boolean {
-    return /(?:facebook\.com|fb\.watch)/i.test(url);
-  }
+  protected readonly pattern = /(?:facebook\.com|fb\.watch)/i;
 }

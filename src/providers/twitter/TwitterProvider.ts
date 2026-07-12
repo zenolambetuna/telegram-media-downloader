@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class TwitterProvider extends BaseYtDlpProvider {
+export class TwitterProvider extends BaseProvider {
   readonly platform = 'twitter' as const;
-
-  supports(url: string): boolean {
-    return /(?:twitter\.com|x\.com)/i.test(url);
-  }
+  protected readonly pattern = /(?:twitter\.com|x\.com)/i;
 }

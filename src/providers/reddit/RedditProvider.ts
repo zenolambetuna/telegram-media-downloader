@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class RedditProvider extends BaseYtDlpProvider {
+export class RedditProvider extends BaseProvider {
   readonly platform = 'reddit' as const;
-
-  supports(url: string): boolean {
-    return /(?:reddit\.com|redd\.it)/i.test(url);
-  }
+  protected readonly pattern = /(?:reddit\.com|redd\.it)/i;
 }

@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class InstagramProvider extends BaseYtDlpProvider {
+export class InstagramProvider extends BaseProvider {
   readonly platform = 'instagram' as const;
-
-  supports(url: string): boolean {
-    return /instagram\.com/i.test(url);
-  }
+  protected readonly pattern = /instagram\.com/i;
 }

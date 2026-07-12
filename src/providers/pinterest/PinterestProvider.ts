@@ -1,9 +1,6 @@
-import { BaseYtDlpProvider } from '../shared/BaseYtDlpProvider';
+import { BaseProvider } from '../shared/BaseProvider';
 
-export class PinterestProvider extends BaseYtDlpProvider {
+export class PinterestProvider extends BaseProvider {
   readonly platform = 'pinterest' as const;
-
-  supports(url: string): boolean {
-    return /pinterest\./i.test(url);
-  }
+  protected readonly pattern = /pinterest\./i;
 }
