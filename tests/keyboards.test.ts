@@ -10,42 +10,50 @@ function audio(id: string, bitrate: number, codec: string): MediaFormat {
   return { id, kind: 'audio', label: 'audio', extension: 'm4a', quality: 'audio', bitrate, audioCodec: codec };
 }
 
-function callbacksOf(keyboard: { inline_keyboard: Array<Array<{ callback_data?: string }>> }): string[] {
-  return keyboard.inline_keyboard.flat().map((button) => button.callback_data ?? '');
+function callbacksOf(keyboard: { inline_keyboard: unknown[][] }): string[] {
+  return keyboard.inline_keyboard
+    .flat()
+    .map((button) => (button as { callback_data?: string }).callback_data)
+    .filter((value): value is string => typeof value === 'string');
 }
 
 describe('choice keyboard', () => {
   it('shows only buckets that exist', () => {
-    const onlyVideo = buildChoiceKeyboard([video('720p', '1')]).inline_keyboard.flat();
-    const labels = onlyVideo.map((button) => button.text);
+    const labels = buildChoiceKeyboard([video('720p', '1')]).inline_keyboard.flat().map((button) => button.text);
     expect(labels).toContain('🎬 Video');
     expect(labels).not.toContain('🎵 Audio');
     expect(labels).toContain('❌ Cancel');
   });
+
+  it('shows audio bucket when audio formats exist', () => {
+    const labels = buildChoiceKeyboard([audio('a', 128000, 'aac')]).inline_keyboard.flat().map((button) => button.text);
+    expect(labels).toContain('🎵 Audio');
+    expect(labels).not.toContain('🎬 Video');
+  });
 });
 
 describe('video keyboard', () => {
-  it('orders qualities by the standard ladder', () => {
-    const keyboard = buildVideoKeyboard([
-      video('1080p', 'a', 1000),
-      video('360p', 'd'),
-      video('720p', 'c', 2000),
-    ]);
-    const callbacks = callbacksOf(keyboard);
-    // ladder order is ascending: 360p, then 720p, then 1080p, then Cancel
-    expect(callbacks[0]).toBe('format:d');
-    expect(callbacks[1]).toBe('format:c');
-    expect(callbacks[2]).toBe('format:a');
-  });
-
   it('dedupes a quality to its highest-bitrate variant', () => {
     const keyboard = buildVideoKeyboard([
+      video('1080p', 'a', 1000),
       video('720p', 'b', 500),
       video('720p', 'c', 2000),
+      video('360p', 'd'),
     ]);
     const callbacks = callbacksOf(keyboard);
+    // 720p resolves to the higher-bitrate variant c, not b
     expect(callbacks).toContain('format:c');
     expect(callbacks).not.toContain('format:b');
+  });
+
+  it('orders qualities by the standard ladder, highest first', () => {
+    const keyboard = buildVideoKeyboard([
+      video('360p', 'd'),
+      video('1080p', 'a'),
+      video('720p', 'c'),
+    ]);
+    const callbacks = callbacksOf(keyboard).filter((value) => value.startsWith('format:'));
+    expect(callbacks).toEqual(['format:a', 'format:c', 'format:d']);
   });
 });
 
