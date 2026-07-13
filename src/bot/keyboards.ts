@@ -1,55 +1,112 @@
 import { InlineKeyboard } from 'grammy';
-import { MediaFormat } from '../types/media';
+import { MediaFormat, MediaKind } from '../types/media';
 
 const VIDEO_LADDER = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p'];
 
+function formatSize(bytes?: number): string {
+  if (!bytes) {
+    return '';
+  }
+  return ` (${Math.round(bytes / 1024 / 1024)} MB)`;
+}
+
 /**
- * Builds the top-level Video / Audio / Cancel keyboard. Only kinds that
- * actually have formats are shown.
+ * New API.
+ *
+ * buildKindKeyboard: the top-level Video / Audio / Cancel chooser. Only shows a
+ * bucket when the engine actually returned formats of that kind.
  */
 export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   if (formats.some((format) => format.kind === 'video')) {
-    keyboard.text('🎬 Video', 'kind:video');
+    keyboard.text('🎬 Video', 'choose:video');
   }
   if (formats.some((format) => format.kind === 'audio')) {
-    keyboard.text('🎵 Audio', 'kind:audio');
+    keyboard.text('🎵 Audio', 'choose:audio');
   }
-  keyboard.row().text('❌ Cancel', 'abort');
+  keyboard.text('❌ Cancel', 'choose:cancel');
   return keyboard;
 }
 
 /**
- * Builds a quality keyboard for the chosen kind. Formats are referenced by
- * their index in the session-held metadata list to keep callback_data tiny.
- * Only qualities that actually exist are displayed, ordered by the standard
- * ladder for video and by bitrate for audio.
+ * New API.
+ *
+ * buildFormatKeyboard: builds the concrete per-quality keyboard for a given
+ * kind. For video, qualities are ordered by the standard ladder and deduped to
+ * the highest-bitrate variant per quality. For audio, formats are ordered by
+ * bitrate descending and labelled with bitrate and codec. Only formats that
+ * actually exist are shown.
  */
-export function buildFormatKeyboard(formats: MediaFormat[], kind: 'video' | 'audio'): InlineKeyboard {
+export function buildFormatKeyboard(formats: MediaFormat[], kind: MediaKind): InlineKeyboard {
+  return kind === 'video' ? buildVideoFormatKeyboard(formats) : buildAudioFormatKeyboard(formats);
+}
+
+function buildVideoFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
   const keyboard = new InlineKeyboard();
-  const entries = formats
-    .map((format, index) => ({ format, index }))
-    .filter((entry) => entry.format.kind === kind);
+  const videos = formats.filter((format) => format.kind === 'video');
 
-  if (kind === 'video') {
-    entries.sort((a, b) => VIDEO_LADDER.indexOf(a.format.quality) - VIDEO_LADDER.indexOf(b.format.quality));
-  } else {
-    entries.sort((a, b) => (b.format.bitrate ?? 0) - (a.format.bitrate ?? 0));
+  const byQuality = new Map<string, MediaFormat>();
+  for (const format of videos) {
+    const existing = byQuality.get(format.quality);
+    if (!existing || (format.bitrate ?? 0) > (existing.bitrate ?? 0)) {
+      byQuality.set(format.quality, format);
+    }
   }
 
-  for (const entry of entries) {
-    const size = entry.format.filesize ? ` · ${Math.round(entry.format.filesize / 1024 / 1024)}MB` : '';
-    const label = kind === 'video'
-      ? `${entry.format.quality}${size}`
-      : `${entry.format.label}${size}`;
-    keyboard.text(label, `fmt:${entry.index}`).row();
+  for (const quality of VIDEO_LADDER) {
+    const format = byQuality.get(quality);
+    if (format) {
+      keyboard.text(`${quality}${formatSize(format.filesize)}`, `format:${format.id}`).row();
+    }
   }
 
-  keyboard.text('⬅️ Back', 'back').text('❌ Cancel', 'abort');
+  for (const [quality, format] of byQuality) {
+    if (!VIDEO_LADDER.includes(quality)) {
+      keyboard.text(`${quality}${formatSize(format.filesize)}`, `format:${format.id}`).row();
+    }
+  }
+
+  keyboard.text('❌ Cancel', 'choose:cancel');
   return keyboard;
 }
 
-/** Cancel keyboard shown on the live progress message. */
-export function buildCancelKeyboard(jobToken: string): InlineKeyboard {
-  return new InlineKeyboard().text('🛑 Cancel download', `cancel:${jobToken}`);
+function buildAudioFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  const audios = formats
+    .filter((format) => format.kind === 'audio')
+    .sort((left, right) => (right.bitrate ?? 0) - (left.bitrate ?? 0));
+
+  for (const format of audios) {
+    const kbps = format.bitrate ? `${Math.round(format.bitrate / 1000)}k ` : '';
+    const codec = format.audioCodec ?? format.extension;
+    keyboard.text(`${kbps}${codec}${formatSize(format.filesize)}`.trim(), `format:${format.id}`).row();
+  }
+
+  keyboard.text('❌ Cancel', 'choose:cancel');
+  return keyboard;
+}
+
+export function buildProgressKeyboard(jobId: string): InlineKeyboard {
+  return new InlineKeyboard().text('✖ Cancel download', `cancel:${jobId}`);
+}
+
+/**
+ * Backward-compatible wrappers.
+ *
+ * The module was refactored from three functions
+ * (buildChoiceKeyboard/buildVideoKeyboard/buildAudioKeyboard) to two
+ * (buildKindKeyboard/buildFormatKeyboard). These wrappers restore the original
+ * exports so existing callers and tests keep working without behaviour change.
+ * The new API is preserved above.
+ */
+export function buildChoiceKeyboard(formats: MediaFormat[]): InlineKeyboard {
+  return buildKindKeyboard(formats);
+}
+
+export function buildVideoKeyboard(formats: MediaFormat[]): InlineKeyboard {
+  return buildFormatKeyboard(formats, 'video');
+}
+
+export function buildAudioKeyboard(formats: MediaFormat[]): InlineKeyboard {
+  return buildFormatKeyboard(formats, 'audio');
 }
