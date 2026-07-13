@@ -1,4 +1,5 @@
 import { Bot, InlineKeyboard, session } from 'grammy';
+import { randomUUID } from 'node:crypto';
 import { config } from '../config/env';
 import { logger } from '../logger/logger';
 import { DatabaseConnection } from '../storage/Database';
@@ -27,11 +28,18 @@ import { FileCache } from '../telegram/FileCache';
 import { ThumbnailUploader } from '../telegram/ThumbnailUploader';
 import { TelegramStorage } from '../telegram/TelegramStorage';
 import { MediaPipeline } from '../core/MediaPipeline';
+import { CancelledError } from '../core/CancelledError';
 import { DownloadQueue } from '../queue/DownloadQueue';
 import { BotContext, SessionData } from '../types/bot';
+import { EngineMetadata } from '../types/download';
 import { AppError } from '../types/errors';
 import { assertValidUrl } from '../utils/url';
 import { rateLimit } from './rateLimit';
+import { buildKindKeyboard, buildFormatKeyboard } from './keyboards';
+import { ProgressPresenter } from './ProgressPresenter';
+import { JobManager } from './JobManager';
+
+const MAX_JOBS_PER_USER = 3;
 
 function initialSession(): SessionData {
   return {};
@@ -88,6 +96,11 @@ export async function createBotApplication(): Promise<{
     errorRepository,
   );
   const queue = new DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS);
+  const jobManager = new JobManager();
+
+  // Per-chat inspected engine result, so the format keyboard can be built
+  // without re-fetching metadata.
+  const inspectedByChat = new Map<number, EngineMetadata>();
 
   await downloadEngine.recoverOrphans();
 
@@ -116,171 +129,182 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply('send a supported media URL. the plugin registry resolves the provider, the Universal Download Engine downloads and merges, and the Storage Engine stores it in your Telegram Drive channel.');
+    await ctx.reply(
+      'Send a supported media URL. I detect the provider, show formats, download through the shared engine, store it in your Telegram Drive channel, and send it back. Duplicates are reused automatically.',
+    );
   });
 
-  bot.command('stats', async (ctx) => {
-    if (ctx.from?.id !== config.ADMIN_ID) {
-      await ctx.reply('not for you');
-      return;
-    }
-
-    const [cacheCount, uploads, cacheHits, errors] = await Promise.all([
-      telegramStorage.cacheCount(),
-      counterRepository.get('uploads'),
-      counterRepository.get('cache_hits'),
-      errorRepository.count(),
-    ]);
-
-    await ctx.reply(`cache: ${cacheCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
-  });
-
-  bot.command('queue', async (ctx) => {
-    if (ctx.from?.id !== config.ADMIN_ID) {
-      await ctx.reply('not for you');
-      return;
-    }
-    const stats = queue.stats();
-    await ctx.reply(`pending: ${stats.pending}\nactive: ${stats.active}\nconcurrency: ${stats.concurrency}\nshutting down: ${stats.shuttingDown}`);
-  });
-
-  bot.command('providers', async (ctx) => {
-    if (ctx.from?.id !== config.ADMIN_ID) {
-      await ctx.reply('not for you');
-      return;
-    }
-    const health = providerRegistry.health();
-    const loaded = health.loaded.map((item) => `${item.name} (${item.priority})`).join('\n') || 'none';
-    const disabled = health.disabled.map((item) => item.name).join(', ') || 'none';
-    const failed = health.failed.map((item) => `${item.providerId}: ${item.reason}`).join('\n') || 'none';
-    await ctx.reply(`loaded:\n${loaded}\n\ndisabled: ${disabled}\n\nfailed:\n${failed}`);
-  });
-
-  bot.command('errors', async (ctx) => {
-    if (ctx.from?.id !== config.ADMIN_ID) {
-      await ctx.reply('not for you');
-      return;
-    }
-    const latest = await errorRepository.latest(5);
-    if (latest.length === 0) {
-      await ctx.reply('no recent errors');
-      return;
-    }
-    await ctx.reply(latest.map((item) => `[${item.code}] ${item.message}`).join('\n'));
-  });
-
-  bot.command('health', async (ctx) => {
-    if (ctx.from?.id !== config.ADMIN_ID) {
-      await ctx.reply('not for you');
-      return;
-    }
-    await ctx.reply('healthy');
-  });
+  registerAdminCommands();
 
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     assertValidUrl(text);
 
     const inspected = await mediaInspector.inspect(text);
+    inspectedByChat.set(ctx.chat.id, inspected);
     ctx.session.pendingUrl = text;
     ctx.session.pendingMetadata = inspected.metadata;
 
-    const keyboard = new InlineKeyboard();
-    if (inspected.formats.some((item) => item.kind === 'video')) {
-      keyboard.text('🎥 Video', 'choose:video');
-    }
-    if (inspected.formats.some((item) => item.kind === 'audio')) {
-      keyboard.text('🎵 Audio', 'choose:audio');
-    }
-    keyboard.text('❌ Cancel', 'choose:cancel');
+    const platform = inspected.metadata.provider;
+    const caption =
+      `📺 ${platform}\n` +
+      `🏷️ ${inspected.metadata.title}\n` +
+      `⏱️ ${formatDuration(inspected.metadata.duration)}\n` +
+      `👤 ${inspected.metadata.uploader ?? 'unknown'}`;
 
-    await ctx.reply(
-      `title: ${inspected.metadata.title}\nduration: ${inspected.metadata.duration ?? 'unknown'}\nuploader: ${inspected.metadata.uploader ?? 'unknown'}\nfile size: ${inspected.metadata.filesize ?? 'unknown'}`,
-      { reply_markup: keyboard },
-    );
+    const keyboard = buildKindKeyboard(inspected.formats);
+
+    if (inspected.metadata.thumbnail) {
+      await ctx.replyWithPhoto(inspected.metadata.thumbnail, { caption, reply_markup: keyboard });
+    } else {
+      await ctx.reply(caption, { reply_markup: keyboard });
+    }
   });
 
-  bot.callbackQuery(/^choose:(.+)$/, async (ctx) => {
-    const action = ctx.match[1];
-    const metadata = ctx.session.pendingMetadata;
-    if (!metadata) {
-      await ctx.answerCallbackQuery({ text: 'request expired' });
+  bot.callbackQuery(/^choose:(video|audio)$/, async (ctx) => {
+    const kind = ctx.match[1] as 'video' | 'audio';
+    const inspected = inspectedByChat.get(ctx.chat?.id ?? -1);
+    if (!inspected) {
+      await ctx.answerCallbackQuery({ text: 'request expired, send the link again' });
       return;
     }
 
-    if (action === 'cancel') {
-      ctx.session.pendingMetadata = undefined;
-      ctx.session.pendingUrl = undefined;
-      await ctx.editMessageText('cancelled');
-      await ctx.answerCallbackQuery();
-      return;
-    }
-
-    const formats = metadata.formats.filter((item) => item.kind === action);
-    const keyboard = new InlineKeyboard();
-    for (const format of formats) {
-      keyboard.text(
-        `${format.label}${format.filesize ? ` (${Math.round(format.filesize / 1024 / 1024)} MB)` : ''}`,
-        `format:${format.id}`,
-      ).row();
-    }
-    keyboard.text('❌ Cancel', 'choose:cancel');
-
-    await ctx.editMessageText(`pick ${action} quality`, { reply_markup: keyboard });
+    const keyboard = buildFormatKeyboard(inspected.formats, kind);
+    await ctx.editMessageReplyMarkup({ reply_markup: keyboard });
     await ctx.answerCallbackQuery();
+  });
+
+  bot.callbackQuery('cancel:pending', async (ctx) => {
+    inspectedByChat.delete(ctx.chat?.id ?? -1);
+    ctx.session.pendingMetadata = undefined;
+    ctx.session.pendingUrl = undefined;
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    await ctx.answerCallbackQuery({ text: 'cancelled' });
+  });
+
+  bot.callbackQuery(/^cancel:job:(.+)$/, async (ctx) => {
+    const jobId = ctx.match[1];
+    const cancelled = jobManager.cancel(jobId);
+    await ctx.answerCallbackQuery({ text: cancelled ? 'cancelling...' : 'job already finished' });
   });
 
   bot.callbackQuery(/^format:(.+)$/, async (ctx) => {
     const formatId = ctx.match[1];
-    const metadata = ctx.session.pendingMetadata;
     const url = ctx.session.pendingUrl;
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
 
-    if (!metadata || !url || !userId || !chatId) {
-      await ctx.answerCallbackQuery({ text: 'request expired' });
+    if (!url || !userId || !chatId) {
+      await ctx.answerCallbackQuery({ text: 'request expired, send the link again' });
       return;
     }
 
-    await ctx.editMessageText('queued');
+    if (jobManager.activeForUser(userId) >= MAX_JOBS_PER_USER) {
+      await ctx.answerCallbackQuery({ text: 'you already have 3 jobs running, let them finish' });
+      return;
+    }
 
-    const stageMessages: Record<string, string> = {
-      fetching_metadata: 'fetching metadata...',
-      resolving_formats: 'resolving formats...',
-      downloading: 'downloading...',
-      merging: 'merging...',
-      processing: 'processing...',
-      uploading: 'uploading...',
-      finished: 'finishing...',
-    };
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+
+    const jobId = randomUUID();
+    const handle = jobManager.register(jobId, userId, chatId);
+    const presenter = new ProgressPresenter(ctx.api, chatId, jobId);
+    await presenter.begin('🕒 Queued');
 
     void queue
-      .add(`${userId}:${Date.now()}`, async () => {
-        let lastStage = '';
-        const result = await pipeline.execute({
+      .add(jobId, async () => {
+        if (handle.cancelled) {
+          throw new CancelledError();
+        }
+        return await pipeline.execute({
           url,
           formatId,
           userId,
           chatId,
+          isCancelled: () => handle.cancelled,
           onProgress: (update) => {
-            const message = stageMessages[update.stage];
-            if (message && update.stage !== lastStage) {
-              lastStage = update.stage;
-              void ctx.api.sendMessage(chatId, message);
-            }
+            void presenter.onProgress(update);
           },
         });
-        await ctx.api.sendMessage(chatId, result.cached ? 'served from cache' : 'done');
-        return result;
+      })
+      .then(async (result) => {
+        await presenter.succeed(result.cached ? '✅ Served from Telegram Drive cache' : '✅ Done');
       })
       .catch(async (error) => {
-        await ctx.api.sendMessage(chatId, error instanceof Error ? error.message : 'job failed');
+        if (error instanceof CancelledError) {
+          await presenter.fail('❌ Cancelled');
+          return;
+        }
+        const message = error instanceof AppError ? error.message : 'job failed, try again';
+        await presenter.fail(`⚠️ ${message}`);
+      })
+      .finally(() => {
+        jobManager.release(jobId);
       });
 
     ctx.session.pendingMetadata = undefined;
     ctx.session.pendingUrl = undefined;
-    await ctx.answerCallbackQuery();
+    inspectedByChat.delete(chatId);
   });
+
+  function registerAdminCommands(): void {
+    const guard = (id?: number): boolean => id === config.ADMIN_ID;
+
+    bot.command('stats', async (ctx) => {
+      if (!guard(ctx.from?.id)) {
+        await ctx.reply('not for you');
+        return;
+      }
+      const [cacheCount, uploads, cacheHits, errors] = await Promise.all([
+        telegramStorage.cacheCount(),
+        counterRepository.get('uploads'),
+        counterRepository.get('cache_hits'),
+        errorRepository.count(),
+      ]);
+      await ctx.reply(`cache: ${cacheCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
+    });
+
+    bot.command('queue', async (ctx) => {
+      if (!guard(ctx.from?.id)) {
+        await ctx.reply('not for you');
+        return;
+      }
+      const stats = queue.stats();
+      await ctx.reply(
+        `pending: ${stats.pending}\nactive: ${stats.active}\nconcurrency: ${stats.concurrency}\nshutting down: ${stats.shuttingDown}`,
+      );
+    });
+
+    bot.command('providers', async (ctx) => {
+      if (!guard(ctx.from?.id)) {
+        await ctx.reply('not for you');
+        return;
+      }
+      const health = providerRegistry.health();
+      const loaded = health.loaded.map((item) => `${item.name} v${item.version} (${item.priority})`).join('\n') || 'none';
+      const disabled = health.disabled.map((item) => item.name).join(', ') || 'none';
+      const failed = health.failed.map((item) => `${item.providerId}: ${item.reason}`).join('\n') || 'none';
+      await ctx.reply(`loaded:\n${loaded}\n\ndisabled: ${disabled}\n\nfailed:\n${failed}`);
+    });
+
+    bot.command('errors', async (ctx) => {
+      if (!guard(ctx.from?.id)) {
+        await ctx.reply('not for you');
+        return;
+      }
+      const latest = await errorRepository.latest(5);
+      await ctx.reply(latest.length === 0 ? 'no recent errors' : latest.map((item) => `[${item.code}] ${item.message}`).join('\n'));
+    });
+
+    bot.command('health', async (ctx) => {
+      if (!guard(ctx.from?.id)) {
+        await ctx.reply('not for you');
+        return;
+      }
+      await ctx.reply('healthy');
+    });
+  }
 
   return {
     start: async () => {
@@ -295,4 +319,15 @@ export async function createBotApplication(): Promise<{
       logger.info('bot stopped');
     },
   };
+}
+
+function formatDuration(seconds?: number): string {
+  if (!seconds || seconds <= 0) {
+    return 'unknown';
+  }
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const parts = hrs > 0 ? [hrs, mins, secs] : [mins, secs];
+  return parts.map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0'))).join(':');
 }
