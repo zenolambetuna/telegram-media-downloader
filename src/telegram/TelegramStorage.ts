@@ -1,11 +1,7 @@
 import { config } from '../config/env';
 import { logger } from '../logger/logger';
-import {
-  CacheLookup,
-  DownloadArtifact,
-  StoredMediaRecord,
-  UploadResult,
-} from '../types/media';
+import { CacheLookup, DownloadArtifact, StoredMediaRecord, UploadResult } from '../types/media';
+import { AppError } from '../types/errors';
 import { safeRemove } from '../utils/fs';
 import { FileCache } from './FileCache';
 import { MessageManager } from './MessageManager';
@@ -13,18 +9,9 @@ import { ThumbnailUploader } from './ThumbnailUploader';
 import { UploadManager } from './UploadManager';
 
 /**
- * TelegramStorage is the reusable Storage Engine facade. It is the single
- * entry point for everything Telegram related. Providers and future Telegram
- * Drive services depend only on this surface, never on the Telegram API or the
- * database implementation directly.
- *
- * Public API:
- *   exists()       -> is this media already stored?
- *   upload()       -> upload a downloaded artifact and persist metadata
- *   copy()         -> deliver stored media to a chat via CopyMessage
- *   get()          -> fetch stored metadata
- *   deleteTemp()   -> remove a temporary local file
- *   saveMetadata() -> persist a media record
+ * TelegramStorage is the reusable Storage Engine facade and the single entry
+ * point for everything Telegram related. Providers and future Telegram Drive
+ * services depend only on this surface.
  */
 export class TelegramStorage {
   constructor(
@@ -38,11 +25,18 @@ export class TelegramStorage {
     return await this.fileCache.lookup(lookup);
   }
 
+  /** Format-aware existence check: same media AND same quality. */
+  async existsByFormat(canonicalUrl: string, quality: string): Promise<StoredMediaRecord | null> {
+    return await this.fileCache.lookupByFormat(canonicalUrl, quality);
+  }
+
   async get(canonicalUrl: string): Promise<StoredMediaRecord | null> {
     return await this.fileCache.lookup({ canonicalUrl });
   }
 
   async upload(artifact: DownloadArtifact): Promise<StoredMediaRecord> {
+    this.assertWithinLimit(artifact);
+
     const thumbnailFileId = await this.thumbnailUploader.resolve(
       artifact.metadata.canonicalUrl,
       artifact.metadata.thumbnail,
@@ -65,7 +59,7 @@ export class TelegramStorage {
 
   async saveMetadata(record: StoredMediaRecord): Promise<void> {
     await this.fileCache.save(record);
-    logger.info({ canonicalUrl: record.canonicalUrl }, 'media metadata persisted');
+    logger.info({ canonicalUrl: record.canonicalUrl, quality: record.quality }, 'media metadata persisted');
   }
 
   async deleteTemp(filePath: string): Promise<void> {
@@ -75,6 +69,18 @@ export class TelegramStorage {
 
   async cacheCount(): Promise<number> {
     return await this.fileCache.count();
+  }
+
+  private assertWithinLimit(artifact: DownloadArtifact): void {
+    const sizeBytes = artifact.probe.size ?? 0;
+    const limitBytes = config.MAX_TELEGRAM_UPLOAD_MB * 1024 * 1024;
+    if (sizeBytes > limitBytes) {
+      const sizeMb = Math.round(sizeBytes / 1024 / 1024);
+      throw new AppError(
+        `File is ${sizeMb} MB which exceeds the ${config.MAX_TELEGRAM_UPLOAD_MB} MB Telegram upload limit. Pick a lower quality or configure a local Bot API server.`,
+        'TOO_LARGE',
+      );
+    }
   }
 
   private buildRecord(artifact: DownloadArtifact, uploadResult: UploadResult): StoredMediaRecord {

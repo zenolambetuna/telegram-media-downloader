@@ -1,15 +1,23 @@
 import { logger } from '../logger/logger';
-import { MediaRepository } from '../storage/MediaRepository';
+import { buildCacheKey, MediaRepository } from '../storage/MediaRepository';
 import { CacheLookup, StoredMediaRecord } from '../types/media';
 import { normalizeUrl } from '../utils/url';
 
 /**
- * FileCache answers "do we already have this media?" using several signals:
- * checksum, original URL, and normalized canonical URL. This keeps the engine
- * from re-downloading anything already stored in the Telegram channel.
+ * FileCache answers "do we already have this media at this quality?". Dedup is
+ * format-aware: the primary key is (canonical url + quality). Checksum and
+ * original-url lookups remain available as secondary signals.
  */
 export class FileCache {
   constructor(private readonly mediaRepository: MediaRepository) {}
+
+  async lookupByFormat(canonicalUrl: string, quality: string): Promise<StoredMediaRecord | null> {
+    const record = await this.mediaRepository.findByCacheKey(buildCacheKey(canonicalUrl, quality));
+    if (record) {
+      logger.info({ canonicalUrl, quality }, 'cache hit by media + format');
+    }
+    return record;
+  }
 
   async lookup(lookup: CacheLookup): Promise<StoredMediaRecord | null> {
     if (lookup.checksum) {

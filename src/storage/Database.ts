@@ -3,6 +3,12 @@ import path from 'node:path';
 import { config } from '../config/env';
 import { ensureDirectory } from '../utils/fs';
 
+/**
+ * SQLite connection and schema management. The media cache is keyed by a
+ * composite cache_key (canonical url + quality) so the same media can be
+ * stored once per quality and deduplicated per format, satisfying the
+ * "same media + format" reuse rule.
+ */
 export class DatabaseConnection {
   private readonly db: Database.Database;
 
@@ -27,12 +33,13 @@ export class DatabaseConnection {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS media_records (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cache_key TEXT NOT NULL UNIQUE,
         message_id INTEGER NOT NULL,
         file_id TEXT NOT NULL,
         chat_id TEXT NOT NULL,
         provider TEXT NOT NULL,
         original_url TEXT NOT NULL,
-        canonical_url TEXT NOT NULL UNIQUE,
+        canonical_url TEXT NOT NULL,
         title TEXT NOT NULL,
         description TEXT,
         duration INTEGER,
@@ -51,32 +58,7 @@ export class DatabaseConnection {
 
       CREATE INDEX IF NOT EXISTS idx_media_records_provider ON media_records(provider);
       CREATE INDEX IF NOT EXISTS idx_media_records_checksum ON media_records(checksum);
-      CREATE INDEX IF NOT EXISTS idx_media_records_original_url ON media_records(original_url);
-
-      -- Per-format cache: the same media at different qualities are distinct
-      -- stored files. Keyed by (canonical_url, format_id) so we never collide
-      -- 720p with 1080p and never re-download an already-stored format.
-      CREATE TABLE IF NOT EXISTS format_cache (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        canonical_url TEXT NOT NULL,
-        format_id TEXT NOT NULL,
-        message_id INTEGER NOT NULL,
-        file_id TEXT NOT NULL,
-        chat_id TEXT NOT NULL,
-        provider TEXT NOT NULL,
-        original_url TEXT NOT NULL,
-        title TEXT NOT NULL,
-        media_type TEXT NOT NULL,
-        quality TEXT NOT NULL,
-        duration INTEGER,
-        size INTEGER,
-        checksum TEXT NOT NULL,
-        upload_date TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE (canonical_url, format_id)
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_format_cache_checksum ON format_cache(checksum);
+      CREATE INDEX IF NOT EXISTS idx_media_records_canonical ON media_records(canonical_url);
 
       CREATE TABLE IF NOT EXISTS thumbnails (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,30 +82,74 @@ export class DatabaseConnection {
       );
     `);
 
-    this.ensureColumns();
+    this.migrateToCompositeCacheKey();
   }
 
-  private ensureColumns(): void {
-    const existing = new Set(
-      (this.db.prepare('PRAGMA table_info(media_records)').all() as Array<{ name: string }>).map(
-        (row) => row.name,
-      ),
-    );
+  /**
+   * Older installs had UNIQUE(canonical_url), which prevented storing multiple
+   * formats of the same media. This rebuilds the table to key on a composite
+   * cache_key while preserving existing rows. Safe to run repeatedly.
+   */
+  private migrateToCompositeCacheKey(): void {
+    const tableSql = (
+      this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='media_records'")
+        .get() as { sql?: string } | undefined
+    )?.sql;
 
-    const additions: Array<{ name: string; ddl: string }> = [
-      { name: 'chat_id', ddl: "ALTER TABLE media_records ADD COLUMN chat_id TEXT NOT NULL DEFAULT ''" },
-      { name: 'description', ddl: 'ALTER TABLE media_records ADD COLUMN description TEXT' },
-      { name: 'resolution', ddl: 'ALTER TABLE media_records ADD COLUMN resolution TEXT' },
-      { name: 'fps', ddl: 'ALTER TABLE media_records ADD COLUMN fps REAL' },
-      { name: 'bitrate', ddl: 'ALTER TABLE media_records ADD COLUMN bitrate INTEGER' },
-      { name: 'codec', ddl: 'ALTER TABLE media_records ADD COLUMN codec TEXT' },
-      { name: 'size', ddl: 'ALTER TABLE media_records ADD COLUMN size INTEGER' },
-    ];
-
-    for (const addition of additions) {
-      if (!existing.has(addition.name)) {
-        this.db.exec(addition.ddl);
-      }
+    const needsRebuild = Boolean(tableSql && /canonical_url\s+TEXT\s+NOT\s+NULL\s+UNIQUE/i.test(tableSql));
+    if (!needsRebuild) {
+      return;
     }
+
+    const rebuild = this.db.transaction(() => {
+      this.db.exec(`
+        CREATE TABLE media_records_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          cache_key TEXT NOT NULL UNIQUE,
+          message_id INTEGER NOT NULL,
+          file_id TEXT NOT NULL,
+          chat_id TEXT NOT NULL DEFAULT '',
+          provider TEXT NOT NULL,
+          original_url TEXT NOT NULL,
+          canonical_url TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          duration INTEGER,
+          thumbnail TEXT,
+          mime_type TEXT NOT NULL,
+          quality TEXT NOT NULL,
+          resolution TEXT,
+          fps REAL,
+          bitrate INTEGER,
+          codec TEXT,
+          size INTEGER,
+          upload_date TEXT NOT NULL,
+          checksum TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT INTO media_records_new (
+          message_id, file_id, chat_id, provider, original_url, canonical_url, title,
+          description, duration, thumbnail, mime_type, quality, resolution, fps,
+          bitrate, codec, size, upload_date, checksum, cache_key
+        )
+        SELECT
+          message_id, file_id, COALESCE(chat_id, ''), provider, original_url, canonical_url, title,
+          description, duration, thumbnail, mime_type, quality, resolution, fps,
+          bitrate, codec, size, upload_date, checksum,
+          canonical_url || '::' || quality
+        FROM media_records;
+
+        DROP TABLE media_records;
+        ALTER TABLE media_records_new RENAME TO media_records;
+
+        CREATE INDEX IF NOT EXISTS idx_media_records_provider ON media_records(provider);
+        CREATE INDEX IF NOT EXISTS idx_media_records_checksum ON media_records(checksum);
+        CREATE INDEX IF NOT EXISTS idx_media_records_canonical ON media_records(canonical_url);
+      `);
+    });
+
+    rebuild();
   }
 }

@@ -10,7 +10,6 @@ export type ErrorCode =
   | 'MERGE_FAILED'
   | 'UNSUPPORTED_FORMAT'
   | 'DISK_FULL'
-  | 'FILE_TOO_LARGE'
   | 'UPLOAD_FAILED'
   | 'NETWORK_FAILURE'
   | 'TIMEOUT'
@@ -18,6 +17,7 @@ export type ErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'LIVE_STREAM'
+  | 'TOO_LARGE'
   | 'CANCELLED';
 
 export class AppError extends Error {

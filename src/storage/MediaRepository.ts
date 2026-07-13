@@ -2,6 +2,7 @@ import { DatabaseConnection } from './Database';
 import { StoredMediaRecord } from '../types/media';
 
 export interface MediaRepository {
+  findByCacheKey(cacheKey: string): Promise<StoredMediaRecord | null>;
   findByCanonicalUrl(canonicalUrl: string): Promise<StoredMediaRecord | null>;
   findByOriginalUrl(originalUrl: string): Promise<StoredMediaRecord | null>;
   findByChecksum(checksum: string): Promise<StoredMediaRecord | null>;
@@ -9,8 +10,17 @@ export interface MediaRepository {
   count(): Promise<number>;
 }
 
+/** Builds the composite cache key used to dedupe per media + quality. */
+export function buildCacheKey(canonicalUrl: string, quality: string): string {
+  return `${canonicalUrl}::${quality}`;
+}
+
 export class SqliteMediaRepository implements MediaRepository {
   constructor(private readonly database: DatabaseConnection) {}
+
+  async findByCacheKey(cacheKey: string): Promise<StoredMediaRecord | null> {
+    return this.queryOne('cache_key', cacheKey);
+  }
 
   async findByCanonicalUrl(canonicalUrl: string): Promise<StoredMediaRecord | null> {
     return this.queryOne('canonical_url', canonicalUrl);
@@ -25,23 +35,25 @@ export class SqliteMediaRepository implements MediaRepository {
   }
 
   async save(record: StoredMediaRecord): Promise<void> {
+    const cacheKey = buildCacheKey(record.canonicalUrl, record.quality);
     this.database.connection
       .prepare(`
         INSERT INTO media_records (
-          message_id, file_id, chat_id, provider, original_url, canonical_url, title,
+          cache_key, message_id, file_id, chat_id, provider, original_url, canonical_url, title,
           description, duration, thumbnail, mime_type, quality, resolution, fps,
           bitrate, codec, size, upload_date, checksum
         ) VALUES (
-          @messageId, @fileId, @chatId, @provider, @originalUrl, @canonicalUrl, @title,
+          @cacheKey, @messageId, @fileId, @chatId, @provider, @originalUrl, @canonicalUrl, @title,
           @description, @duration, @thumbnail, @mimeType, @quality, @resolution, @fps,
           @bitrate, @codec, @size, @uploadDate, @checksum
         )
-        ON CONFLICT(canonical_url) DO UPDATE SET
+        ON CONFLICT(cache_key) DO UPDATE SET
           message_id = excluded.message_id,
           file_id = excluded.file_id,
           chat_id = excluded.chat_id,
           provider = excluded.provider,
           original_url = excluded.original_url,
+          canonical_url = excluded.canonical_url,
           title = excluded.title,
           description = excluded.description,
           duration = excluded.duration,
@@ -57,6 +69,7 @@ export class SqliteMediaRepository implements MediaRepository {
           checksum = excluded.checksum
       `)
       .run({
+        cacheKey,
         messageId: record.messageId,
         fileId: record.fileId,
         chatId: record.chatId,
@@ -90,7 +103,6 @@ export class SqliteMediaRepository implements MediaRepository {
     const row = this.database.connection
       .prepare(`SELECT * FROM media_records WHERE ${column} = ? LIMIT 1`)
       .get(value) as Record<string, unknown> | undefined;
-
     return row ? this.mapRow(row) : null;
   }
 
@@ -100,7 +112,7 @@ export class SqliteMediaRepository implements MediaRepository {
       messageId: row.message_id as number,
       fileId: row.file_id as string,
       chatId: row.chat_id as string,
-      provider: row.provider as StoredMediaRecord['provider'],
+      provider: row.provider as string,
       originalUrl: row.original_url as string,
       canonicalUrl: row.canonical_url as string,
       title: row.title as string,
