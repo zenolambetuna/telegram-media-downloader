@@ -53,6 +53,31 @@ export class DatabaseConnection {
       CREATE INDEX IF NOT EXISTS idx_media_records_checksum ON media_records(checksum);
       CREATE INDEX IF NOT EXISTS idx_media_records_original_url ON media_records(original_url);
 
+      -- Per-format cache: the same media at different qualities are distinct
+      -- stored files. Keyed by (canonical_url, format_id) so we never collide
+      -- 720p with 1080p and never re-download an already-stored format.
+      CREATE TABLE IF NOT EXISTS format_cache (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        canonical_url TEXT NOT NULL,
+        format_id TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        file_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        original_url TEXT NOT NULL,
+        title TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        quality TEXT NOT NULL,
+        duration INTEGER,
+        size INTEGER,
+        checksum TEXT NOT NULL,
+        upload_date TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (canonical_url, format_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_format_cache_checksum ON format_cache(checksum);
+
       CREATE TABLE IF NOT EXISTS thumbnails (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         source_key TEXT NOT NULL UNIQUE,

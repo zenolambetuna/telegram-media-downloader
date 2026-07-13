@@ -1,71 +1,53 @@
 # Telegram Bot Layer
 
-The bot layer is a thin consumer built entirely on top of the existing architecture. It does not modify the provider system, the Universal Download Engine, or the Telegram Storage Engine. It only orchestrates the user conversation and delegates all real work.
+The bot layer is a thin consumer built entirely on top of the existing architecture. It does not modify the provider system or the Universal Download Engine. It orchestrates user interaction and delegates all work to the engine, the queue, and the Storage Engine.
 
 ## Flow
 
 1. User sends a URL.
-2. `MediaInspector` resolves the provider via the registry and asks the engine for metadata + normalized formats.
-3. The bot shows platform, title, duration, and thumbnail with a Video / Audio keyboard.
-4. Selecting a kind edits the same message to show the actual available qualities.
-5. Selecting a format registers a job, shows a single live progress message, and enqueues the work.
-6. The pipeline checks the Telegram Drive cache, downloads through the engine if needed, uploads through the Storage Engine, and delivers the file back.
-7. Duplicates are served from cache with `copyMessage`, no re-download.
-
-## Components
-
-| Component | Responsibility |
-| --- | --- |
-| `keyboards.ts` | Builds the kind keyboard and the quality keyboard from engine formats. |
-| `ProgressPresenter` | Owns ONE message and edits it per stage. Throttled and conflict-safe. |
-| `JobManager` | Tracks per-user jobs and provides cooperative cancellation. |
-| `MediaPipeline` | Cache -> engine -> storage, with cancel checkpoints and large-file guard. |
+2. `MediaInspector` resolves the provider via the registry and asks the engine for metadata.
+3. The bot shows title, platform, duration, uploader, and the thumbnail as a photo.
+4. An inline keyboard offers Video / Audio, then per-quality choices built only from formats the engine actually returned.
+5. On selection, the job is enqueued. A single message is edited in place through every stage.
+6. `MediaPipeline` checks the per-format cache, runs the engine, guards the Telegram size limit, uploads via the Storage Engine, persists metadata, and delivers the file with `copyMessage`.
+7. The temp file is always deleted.
 
 ## Live progress (single message)
 
-`ProgressPresenter` sends exactly one message when a job is queued and then
-**edits** it as the job moves through fetching, resolving, downloading,
-merging, processing, uploading, and finishing. Edits are throttled to ~1.2s and
-de-duplicated, and 'message is not modified' / edit FloodWait are swallowed so
-the UI can never crash a job. This replaces the previous behavior that sent a
-new message per stage.
-
-## Queue and multiple users
-
-Downloads run through the shared `DownloadQueue` with configurable concurrency.
-Each user is limited to 3 concurrent jobs so one user cannot starve others.
+`ProgressReporter` owns one Telegram message and edits it as the job advances through the engine stages (fetching metadata, resolving formats, downloading, merging, processing, uploading, finishing). Edits are throttled by `PROGRESS_THROTTLE_MS` and identical edits are skipped, so Telegram never sees spam or a "message is not modified" error. This replaces the old behavior of sending one message per stage.
 
 ## Cancellation
 
-Every queued job and every live progress message carries a Cancel button.
-Cancelling flips a cooperative flag the pipeline checks before download, before
-upload, and before delivery. A job cancelled while still queued never starts.
+Every in-progress message carries a Cancel button. Pressing it:
 
-Scope: this is cooperative cancellation. It stops the job at the next
-checkpoint; it does not force-kill an in-flight yt-dlp process mid-stream. That
-would require an engine-level abort hook, which is intentionally out of scope
-for the bot layer.
+- removes the job from the queue if it has not started yet, or
+- trips a `CancellationToken` that the pipeline checks at stage boundaries, stopping before upload and cleaning the temp file.
+
+Honest limitation: cancellation is cooperative. It cancels queued jobs instantly and halts post-download work immediately, but it does not force-kill an in-flight yt-dlp process, because that would require adding a hook to the Download Engine, which this layer intentionally does not modify. If you want hard mid-download aborts, that is a small, clean engine hook I can add on request.
+
+## Per-format deduplication
+
+Requirement 13 is enforced by `FormatCacheRepository`, keyed by `(canonical_url, format_id)`. The same video at 720p and 1080p are distinct cache entries, so:
+
+- the same media + format is never downloaded twice; it is delivered by `copyMessage` reusing the stored Telegram file, and
+- different qualities of the same media never overwrite each other.
 
 ## Large files
 
-Before upload, the pipeline checks the probed size against the 50 MB Telegram
-bot upload limit and returns a clear, typed message when a file is too large.
-Raising this ceiling requires a local Telegram Bot API server; the guard is the
-honest boundary until that exists.
+Before uploading, `MediaPipeline` compares the file size against `MAX_TELEGRAM_UPLOAD_BYTES` (default 50 MB for the standard bot API). Oversized files produce a clear `FILE_TOO_LARGE` error telling the user to pick a lower quality or configure a local Bot API server (which raises the limit to ~2 GB). The size check is centralized so a future chunking or local-server strategy plugs in here without touching the engine.
 
-## FloodWait
+## Queue and multiple users
 
-Upload FloodWait is handled inside the Storage Engine's `UploadManager` with
-automatic backoff. Progress-edit FloodWait is swallowed by the presenter.
+`DownloadQueue` runs jobs with bounded concurrency (`MAX_CONCURRENT_DOWNLOADS`) and supports per-job cancellation. Multiple users are served fairly; excess jobs wait.
 
-## Persistence
+## FloodWait and errors
 
-On a fresh upload the Storage Engine stores file id, message id, channel id,
-size, media type, duration, platform, original URL, title, quality, checksum,
-and upload timestamp. The bot does not persist anything itself.
+Upload retries and Telegram FloodWait backoff live in `UploadManager` (Storage Engine). Download and network errors are classified into typed, user-safe messages by the engine's `classifyDownloadError`. The bot simply shows the resulting message.
 
-## Duplicate reuse
+## What this layer intentionally does not do
 
-Before downloading, the pipeline calls `telegramStorage.exists()`. On a hit the
-media is delivered with `copyMessage` reusing the stored Telegram file, so the
-same media is never downloaded or uploaded twice.
+- It does not call yt-dlp or ffmpeg.
+- It does not talk to Telegram for storage directly; it goes through the Storage Engine.
+- It does not modify providers or the engine.
+
+That separation is the whole point: the bot is one of potentially many consumers of the same engine and storage, exactly as a future Telegram Drive service will be.

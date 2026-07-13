@@ -10,13 +10,15 @@ export type ErrorCode =
   | 'MERGE_FAILED'
   | 'UNSUPPORTED_FORMAT'
   | 'DISK_FULL'
+  | 'FILE_TOO_LARGE'
   | 'UPLOAD_FAILED'
   | 'NETWORK_FAILURE'
   | 'TIMEOUT'
   | 'RATE_LIMITED'
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
-  | 'LIVE_STREAM';
+  | 'LIVE_STREAM'
+  | 'CANCELLED';
 
 export class AppError extends Error {
   constructor(

@@ -19,6 +19,10 @@ const envSchema = z.object({
   DOWNLOAD_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(3),
   UPLOAD_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(3),
   RETRY_BASE_DELAY_MS: z.coerce.number().int().positive().default(1000),
+  PROGRESS_THROTTLE_MS: z.coerce.number().int().positive().default(1500),
+  // Telegram bot API upload ceiling. Default 50MB (standard bot API). A local
+  // Bot API server raises this to ~2GB; set the env var accordingly.
+  MAX_TELEGRAM_UPLOAD_BYTES: z.coerce.number().int().positive().default(50 * 1024 * 1024),
   YT_DLP_PATH: z.string().default('yt-dlp'),
   FFMPEG_PATH: z.string().default('ffmpeg'),
 });

@@ -1,10 +1,11 @@
-import { Bot, InlineKeyboard, session } from 'grammy';
+import { Bot, session } from 'grammy';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/env';
 import { logger } from '../logger/logger';
 import { DatabaseConnection } from '../storage/Database';
 import { SqliteMediaRepository } from '../storage/MediaRepository';
 import { ThumbnailRepository } from '../storage/ThumbnailRepository';
+import { FormatCacheRepository } from '../storage/FormatCacheRepository';
 import { ErrorRepository } from '../storage/ErrorRepository';
 import { CounterRepository } from '../storage/CounterRepository';
 import { ProcessRunner } from '../downloader/ProcessRunner';
@@ -28,18 +29,15 @@ import { FileCache } from '../telegram/FileCache';
 import { ThumbnailUploader } from '../telegram/ThumbnailUploader';
 import { TelegramStorage } from '../telegram/TelegramStorage';
 import { MediaPipeline } from '../core/MediaPipeline';
-import { CancelledError } from '../core/CancelledError';
 import { DownloadQueue } from '../queue/DownloadQueue';
+import { CancellationRegistry } from '../core/CancellationToken';
 import { BotContext, SessionData } from '../types/bot';
-import { EngineMetadata } from '../types/download';
+import { MediaMetadata } from '../types/media';
 import { AppError } from '../types/errors';
 import { assertValidUrl } from '../utils/url';
 import { rateLimit } from './rateLimit';
-import { buildKindKeyboard, buildFormatKeyboard } from './keyboards';
-import { ProgressPresenter } from './ProgressPresenter';
-import { JobManager } from './JobManager';
-
-const MAX_JOBS_PER_USER = 3;
+import { ProgressReporter } from './ProgressReporter';
+import { buildFormatKeyboard, buildKindKeyboard } from './keyboard';
 
 function initialSession(): SessionData {
   return {};
@@ -52,6 +50,7 @@ export async function createBotApplication(): Promise<{
   const database = new DatabaseConnection();
   const mediaRepository = new SqliteMediaRepository(database);
   const thumbnailRepository = new ThumbnailRepository(database);
+  const formatCacheRepository = new FormatCacheRepository(database);
   const errorRepository = new ErrorRepository(database);
   const counterRepository = new CounterRepository(database);
 
@@ -92,15 +91,16 @@ export async function createBotApplication(): Promise<{
     providerRegistry,
     downloadEngine,
     telegramStorage,
+    formatCacheRepository,
     counterRepository,
     errorRepository,
   );
   const queue = new DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS);
-  const jobManager = new JobManager();
+  const cancellations = new CancellationRegistry();
 
-  // Per-chat inspected engine result, so the format keyboard can be built
-  // without re-fetching metadata.
-  const inspectedByChat = new Map<number, EngineMetadata>();
+  // Short-lived job store mapping a jobId to its resolved metadata + url, so
+  // callback queries can act without re-fetching. Kept in memory by design.
+  const jobs = new Map<string, { url: string; metadata: MediaMetadata }>();
 
   await downloadEngine.recoverOrphans();
 
@@ -124,187 +124,155 @@ export async function createBotApplication(): Promise<{
         context: JSON.stringify({ updateId: ctx.update.update_id, userId: ctx.from?.id }),
       });
       logger.error({ error: appError, update: ctx.update }, 'bot update failed');
-      await ctx.reply(appError.message);
+      await ctx.reply(appError.message).catch(() => undefined);
     }
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply(
-      'Send a supported media URL. I detect the provider, show formats, download through the shared engine, store it in your Telegram Drive channel, and send it back. Duplicates are reused automatically.',
-    );
+    await ctx.reply('Send a supported media URL. I detect the provider, show real formats, download and store it in your Telegram Drive channel, then send it back. You can cancel any job.');
   });
 
-  registerAdminCommands();
+  bot.command('stats', async (ctx) => {
+    if (ctx.from?.id !== config.ADMIN_ID) {
+      await ctx.reply('not for you');
+      return;
+    }
+    const [formatCount, uploads, cacheHits, errors] = await Promise.all([
+      formatCacheRepository.count(),
+      counterRepository.get('uploads'),
+      counterRepository.get('cache_hits'),
+      errorRepository.count(),
+    ]);
+    await ctx.reply(`cached formats: ${formatCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
+  });
+
+  bot.command('queue', async (ctx) => {
+    if (ctx.from?.id !== config.ADMIN_ID) {
+      await ctx.reply('not for you');
+      return;
+    }
+    const stats = queue.stats();
+    await ctx.reply(`pending: ${stats.pending}\nactive: ${stats.active}\nconcurrency: ${stats.concurrency}`);
+  });
+
+  bot.command('providers', async (ctx) => {
+    if (ctx.from?.id !== config.ADMIN_ID) {
+      await ctx.reply('not for you');
+      return;
+    }
+    const health = providerRegistry.health();
+    const loaded = health.loaded.map((item) => `${item.name} v${item.version} (${item.priority})`).join('\n') || 'none';
+    await ctx.reply(`loaded:\n${loaded}`);
+  });
+
+  bot.command('health', async (ctx) => {
+    if (ctx.from?.id !== config.ADMIN_ID) {
+      await ctx.reply('not for you');
+      return;
+    }
+    await ctx.reply('healthy');
+  });
 
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     assertValidUrl(text);
 
     const inspected = await mediaInspector.inspect(text);
-    inspectedByChat.set(ctx.chat.id, inspected);
-    ctx.session.pendingUrl = text;
-    ctx.session.pendingMetadata = inspected.metadata;
+    const jobId = randomUUID().slice(0, 8);
+    jobs.set(jobId, { url: text, metadata: inspected.metadata });
 
-    const platform = inspected.metadata.provider;
-    const caption =
-      `📺 ${platform}\n` +
-      `🏷️ ${inspected.metadata.title}\n` +
-      `⏱️ ${formatDuration(inspected.metadata.duration)}\n` +
-      `👤 ${inspected.metadata.uploader ?? 'unknown'}`;
+    const meta = inspected.metadata;
+    const info = [
+      `🏷 ${meta.title}`,
+      `📀 ${meta.provider}`,
+      meta.duration ? `⏱ ${meta.duration}s` : undefined,
+      meta.uploader ? `👤 ${meta.uploader}` : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n');
 
-    const keyboard = buildKindKeyboard(inspected.formats);
+    const keyboard = buildKindKeyboard(meta.formats, jobId);
 
-    if (inspected.metadata.thumbnail) {
-      await ctx.replyWithPhoto(inspected.metadata.thumbnail, { caption, reply_markup: keyboard });
+    if (meta.thumbnail) {
+      await ctx.replyWithPhoto(meta.thumbnail, { caption: info, reply_markup: keyboard }).catch(async () => {
+        await ctx.reply(info, { reply_markup: keyboard });
+      });
     } else {
-      await ctx.reply(caption, { reply_markup: keyboard });
+      await ctx.reply(info, { reply_markup: keyboard });
     }
   });
 
-  bot.callbackQuery(/^choose:(video|audio)$/, async (ctx) => {
+  bot.callbackQuery(/^kind:(video|audio):(.+)$/, async (ctx) => {
     const kind = ctx.match[1] as 'video' | 'audio';
-    const inspected = inspectedByChat.get(ctx.chat?.id ?? -1);
-    if (!inspected) {
-      await ctx.answerCallbackQuery({ text: 'request expired, send the link again' });
+    const jobId = ctx.match[2];
+    const job = jobs.get(jobId);
+    if (!job) {
+      await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
-
-    const keyboard = buildFormatKeyboard(inspected.formats, kind);
-    await ctx.editMessageReplyMarkup({ reply_markup: keyboard });
+    const keyboard = buildFormatKeyboard(job.metadata.formats, kind, jobId);
+    await ctx.editMessageReplyMarkup({ reply_markup: keyboard }).catch(() => undefined);
     await ctx.answerCallbackQuery();
   });
 
-  bot.callbackQuery('cancel:pending', async (ctx) => {
-    inspectedByChat.delete(ctx.chat?.id ?? -1);
-    ctx.session.pendingMetadata = undefined;
-    ctx.session.pendingUrl = undefined;
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
-    await ctx.answerCallbackQuery({ text: 'cancelled' });
-  });
-
-  bot.callbackQuery(/^cancel:job:(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
     const jobId = ctx.match[1];
-    const cancelled = jobManager.cancel(jobId);
-    await ctx.answerCallbackQuery({ text: cancelled ? 'cancelling...' : 'job already finished' });
+    const removed = queue.cancelPending(jobId);
+    const signalled = cancellations.cancel(jobId);
+    jobs.delete(jobId);
+    await ctx.answerCallbackQuery({ text: removed || signalled ? 'cancelling' : 'nothing to cancel' });
+    if (removed || signalled) {
+      await ctx.editMessageText('Cancelled').catch(() => undefined);
+    }
   });
 
-  bot.callbackQuery(/^format:(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^fmt:([^:]+):(.+)$/, async (ctx) => {
     const formatId = ctx.match[1];
-    const url = ctx.session.pendingUrl;
+    const jobId = ctx.match[2];
+    const job = jobs.get(jobId);
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
 
-    if (!url || !userId || !chatId) {
-      await ctx.answerCallbackQuery({ text: 'request expired, send the link again' });
-      return;
-    }
-
-    if (jobManager.activeForUser(userId) >= MAX_JOBS_PER_USER) {
-      await ctx.answerCallbackQuery({ text: 'you already have 3 jobs running, let them finish' });
+    if (!job || !userId || !chatId) {
+      await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
 
     await ctx.answerCallbackQuery();
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    await ctx.editMessageText('Queued...').catch(() => undefined);
+    const progressMessageId = ctx.callbackQuery.message?.message_id;
 
-    const jobId = randomUUID();
-    const handle = jobManager.register(jobId, userId, chatId);
-    const presenter = new ProgressPresenter(ctx.api, chatId, jobId);
-    await presenter.begin('🕒 Queued');
+    const token = cancellations.create(jobId);
+    const reporter =
+      progressMessageId !== undefined
+        ? new ProgressReporter(ctx.api, chatId, progressMessageId, `cancel:${jobId}`)
+        : undefined;
 
     void queue
-      .add(jobId, async () => {
-        if (handle.cancelled) {
-          throw new CancelledError();
-        }
-        return await pipeline.execute({
-          url,
+      .add(jobId, userId, async () => {
+        token.throwIfCancelled();
+        const result = await pipeline.execute({
+          url: job.url,
           formatId,
           userId,
           chatId,
-          isCancelled: () => handle.cancelled,
+          token,
           onProgress: (update) => {
-            void presenter.onProgress(update);
+            void reporter?.update(update.stage, update.ratio);
           },
         });
-      })
-      .then(async (result) => {
-        await presenter.succeed(result.cached ? '✅ Served from Telegram Drive cache' : '✅ Done');
+        await reporter?.succeed(result.cached ? 'Served from Telegram Drive cache.' : 'Done. Uploaded to Telegram Drive.');
+        return result;
       })
       .catch(async (error) => {
-        if (error instanceof CancelledError) {
-          await presenter.fail('❌ Cancelled');
-          return;
-        }
-        const message = error instanceof AppError ? error.message : 'job failed, try again';
-        await presenter.fail(`⚠️ ${message}`);
+        const message = error instanceof AppError ? error.message : 'Job failed';
+        await reporter?.fail(message);
       })
       .finally(() => {
-        jobManager.release(jobId);
+        cancellations.release(jobId);
+        jobs.delete(jobId);
       });
-
-    ctx.session.pendingMetadata = undefined;
-    ctx.session.pendingUrl = undefined;
-    inspectedByChat.delete(chatId);
   });
-
-  function registerAdminCommands(): void {
-    const guard = (id?: number): boolean => id === config.ADMIN_ID;
-
-    bot.command('stats', async (ctx) => {
-      if (!guard(ctx.from?.id)) {
-        await ctx.reply('not for you');
-        return;
-      }
-      const [cacheCount, uploads, cacheHits, errors] = await Promise.all([
-        telegramStorage.cacheCount(),
-        counterRepository.get('uploads'),
-        counterRepository.get('cache_hits'),
-        errorRepository.count(),
-      ]);
-      await ctx.reply(`cache: ${cacheCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
-    });
-
-    bot.command('queue', async (ctx) => {
-      if (!guard(ctx.from?.id)) {
-        await ctx.reply('not for you');
-        return;
-      }
-      const stats = queue.stats();
-      await ctx.reply(
-        `pending: ${stats.pending}\nactive: ${stats.active}\nconcurrency: ${stats.concurrency}\nshutting down: ${stats.shuttingDown}`,
-      );
-    });
-
-    bot.command('providers', async (ctx) => {
-      if (!guard(ctx.from?.id)) {
-        await ctx.reply('not for you');
-        return;
-      }
-      const health = providerRegistry.health();
-      const loaded = health.loaded.map((item) => `${item.name} v${item.version} (${item.priority})`).join('\n') || 'none';
-      const disabled = health.disabled.map((item) => item.name).join(', ') || 'none';
-      const failed = health.failed.map((item) => `${item.providerId}: ${item.reason}`).join('\n') || 'none';
-      await ctx.reply(`loaded:\n${loaded}\n\ndisabled: ${disabled}\n\nfailed:\n${failed}`);
-    });
-
-    bot.command('errors', async (ctx) => {
-      if (!guard(ctx.from?.id)) {
-        await ctx.reply('not for you');
-        return;
-      }
-      const latest = await errorRepository.latest(5);
-      await ctx.reply(latest.length === 0 ? 'no recent errors' : latest.map((item) => `[${item.code}] ${item.message}`).join('\n'));
-    });
-
-    bot.command('health', async (ctx) => {
-      if (!guard(ctx.from?.id)) {
-        await ctx.reply('not for you');
-        return;
-      }
-      await ctx.reply('healthy');
-    });
-  }
 
   return {
     start: async () => {
@@ -319,15 +287,4 @@ export async function createBotApplication(): Promise<{
       logger.info('bot stopped');
     },
   };
-}
-
-function formatDuration(seconds?: number): string {
-  if (!seconds || seconds <= 0) {
-    return 'unknown';
-  }
-  const hrs = Math.floor(seconds / 3600);
-  const mins = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const parts = hrs > 0 ? [hrs, mins, secs] : [mins, secs];
-  return parts.map((part, index) => (index === 0 ? String(part) : String(part).padStart(2, '0'))).join(':');
 }
