@@ -32,9 +32,10 @@ export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
  * Current API.
  *
  * buildFormatKeyboard: builds the concrete per-quality keyboard for a kind.
- * Video qualities are ordered by the standard ladder and deduped to the
- * highest-bitrate variant per quality. Audio is ordered by bitrate descending
- * and labelled with bitrate and codec. Only formats that actually exist show.
+ * Video qualities are ordered by the standard ladder, highest first, and
+ * deduped to the highest-bitrate variant per quality. Audio is ordered by
+ * bitrate descending and labelled with bitrate and codec. Only formats that
+ * actually exist show.
  */
 export function buildFormatKeyboard(formats: MediaFormat[], kind: MediaKind): InlineKeyboard {
   return kind === 'video' ? buildVideoFormatKeyboard(formats) : buildAudioFormatKeyboard(formats);
@@ -52,10 +53,11 @@ function buildVideoFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
     }
   }
 
-  for (const quality of VIDEO_LADDER) {
-    const format = byQuality.get(quality);
+  // Highest quality first: walk the standard ladder in reverse.
+  for (let index = VIDEO_LADDER.length - 1; index >= 0; index -= 1) {
+    const format = byQuality.get(VIDEO_LADDER[index]);
     if (format) {
-      keyboard.text(`${quality}${formatSize(format.filesize)}`, `format:${format.id}`).row();
+      keyboard.text(`${VIDEO_LADDER[index]}${formatSize(format.filesize)}`, `format:${format.id}`).row();
     }
   }
 
