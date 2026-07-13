@@ -1,44 +1,39 @@
+import { DownloadQueue } from '../queue/DownloadQueue';
+import { CancellationToken, isCancellation } from './CancellationToken';
 import { logger } from '../logger/logger';
 
 export interface JobHandle {
   jobId: string;
   userId: number;
-  chatId: number;
-  cancelled: boolean;
-  cancel: () => void;
+  token: CancellationToken;
 }
 
 /**
- * JobManager tracks in-flight and queued jobs per user and provides
- * cooperative cancellation. Cancellation flips a flag the pipeline checks at
- * safe checkpoints (before download, before upload, before delivery). Queued
- * jobs that have not started yet are cancelled before any work happens.
- *
- * Note on scope: this is cooperative cancellation at the bot/orchestration
- * layer. It does not force-kill an already-running yt-dlp process mid-stream,
- * which would require an engine-level abort hook. The job stops at the next
- * checkpoint and its workspace is cleaned by the engine.
+ * JobManager sits on top of the existing DownloadQueue (which is not modified).
+ * It adds per-user job tracking and cooperative cancellation. Concurrency and
+ * scheduling remain owned by DownloadQueue.
  */
 export class JobManager {
   private readonly jobs = new Map<string, JobHandle>();
+  private readonly userJobs = new Map<number, Set<string>>();
 
-  register(jobId: string, userId: number, chatId: number): JobHandle {
-    const handle: JobHandle = {
-      jobId,
-      userId,
-      chatId,
-      cancelled: false,
-      cancel: () => {
-        handle.cancelled = true;
-        logger.info({ jobId, userId }, 'job cancellation requested');
-      },
-    };
+  constructor(private readonly queue: DownloadQueue) {}
+
+  async run<T>(userId: number, jobId: string, task: (token: CancellationToken) => Promise<T>): Promise<T> {
+    const token = new CancellationToken();
+    const handle: JobHandle = { jobId, userId, token };
     this.jobs.set(jobId, handle);
-    return handle;
-  }
+    this.trackUser(userId, jobId);
 
-  get(jobId: string): JobHandle | undefined {
-    return this.jobs.get(jobId);
+    try {
+      return await this.queue.add(jobId, async () => {
+        token.throwIfCancelled();
+        return await task(token);
+      });
+    } finally {
+      this.jobs.delete(jobId);
+      this.userJobs.get(userId)?.delete(jobId);
+    }
   }
 
   cancel(jobId: string): boolean {
@@ -46,21 +41,36 @@ export class JobManager {
     if (!handle) {
       return false;
     }
-    handle.cancel();
+    handle.token.cancel();
+    logger.info({ jobId }, 'cancellation requested');
     return true;
   }
 
-  release(jobId: string): void {
-    this.jobs.delete(jobId);
-  }
-
-  activeForUser(userId: number): number {
+  cancelAllForUser(userId: number): number {
+    const ids = this.userJobs.get(userId);
+    if (!ids || ids.size === 0) {
+      return 0;
+    }
     let count = 0;
-    for (const handle of this.jobs.values()) {
-      if (handle.userId === userId && !handle.cancelled) {
+    for (const jobId of ids) {
+      if (this.cancel(jobId)) {
         count += 1;
       }
     }
     return count;
+  }
+
+  activeCountForUser(userId: number): number {
+    return this.userJobs.get(userId)?.size ?? 0;
+  }
+
+  static isCancellation(error: unknown): boolean {
+    return isCancellation(error);
+  }
+
+  private trackUser(userId: number, jobId: string): void {
+    const set = this.userJobs.get(userId) ?? new Set<string>();
+    set.add(jobId);
+    this.userJobs.set(userId, set);
   }
 }

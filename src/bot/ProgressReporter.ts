@@ -1,9 +1,9 @@
 import { Api } from 'grammy';
-import { config } from '../config/env';
+import { DownloadStage, ProgressUpdate } from '../types/download';
 import { logger } from '../logger/logger';
-import { DownloadStage } from '../types/download';
+import { buildProgressKeyboard } from './keyboards';
 
-const STAGE_TEXT: Record<DownloadStage, string> = {
+const STAGE_LABELS: Record<DownloadStage, string> = {
   fetching_metadata: 'Fetching metadata',
   resolving_formats: 'Resolving formats',
   downloading: 'Downloading',
@@ -15,57 +15,58 @@ const STAGE_TEXT: Record<DownloadStage, string> = {
 
 /**
  * ProgressReporter owns a single Telegram message and edits it in place as the
- * job advances. It throttles edits and skips no-op edits so it never trips
- * Telegram rate limits or the "message is not modified" error. This satisfies
- * the requirement that progress edits one message instead of spamming many.
+ * job advances. It never sends a new message per stage (requirement 14) and it
+ * throttles edits so rapid ratio updates do not trigger Telegram FloodWait.
  */
 export class ProgressReporter {
   private lastText = '';
   private lastEditAt = 0;
-  private readonly replyMarkup: { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> };
+  private readonly minIntervalMs = 2000;
 
   constructor(
     private readonly api: Api,
     private readonly chatId: number,
     private readonly messageId: number,
-    cancelData: string,
-  ) {
-    this.replyMarkup = {
-      inline_keyboard: [[{ text: 'Cancel', callback_data: cancelData }]],
-    };
-  }
+    private readonly jobId: string,
+  ) {}
 
-  async update(stage: DownloadStage, ratio?: number): Promise<void> {
-    const bar = ratio !== undefined ? ` ${Math.round(ratio * 100)}%` : '';
-    const text = `${STAGE_TEXT[stage]}${bar}...`;
-    await this.render(text, stage !== 'finished');
-  }
+  async update(progress: ProgressUpdate): Promise<void> {
+    const label = STAGE_LABELS[progress.stage];
+    const bar = progress.ratio !== undefined ? this.renderBar(progress.ratio) : '';
+    const detail = progress.detail ? `\n${progress.detail}` : '';
+    const text = `${label}...${bar}${detail}`;
 
-  async succeed(text: string): Promise<void> {
-    await this.render(text, false);
-  }
-
-  async fail(text: string): Promise<void> {
-    await this.render(text, false);
-  }
-
-  private async render(text: string, withCancel: boolean): Promise<void> {
     const now = Date.now();
+    const stageChanged = !this.lastText.startsWith(label);
+    if (!stageChanged && now - this.lastEditAt < this.minIntervalMs) {
+      return;
+    }
     if (text === this.lastText) {
       return;
     }
-    if (withCancel && now - this.lastEditAt < config.PROGRESS_THROTTLE_MS) {
-      return;
-    }
+
     this.lastText = text;
     this.lastEditAt = now;
+    await this.safeEdit(text, progress.stage !== 'finished');
+  }
 
+  async finish(message: string): Promise<void> {
+    await this.safeEdit(message, false);
+  }
+
+  private renderBar(ratio: number): string {
+    const clamped = Math.max(0, Math.min(1, ratio));
+    const filled = Math.round(clamped * 10);
+    return `\n[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${Math.round(clamped * 100)}%`;
+  }
+
+  private async safeEdit(text: string, withCancel: boolean): Promise<void> {
     try {
       await this.api.editMessageText(this.chatId, this.messageId, text, {
-        reply_markup: withCancel ? this.replyMarkup : { inline_keyboard: [] },
+        reply_markup: withCancel ? buildProgressKeyboard(this.jobId) : undefined,
       });
     } catch (error) {
-      logger.debug({ error }, 'progress edit skipped');
+      logger.debug({ error, jobId: this.jobId }, 'progress edit skipped');
     }
   }
 }

@@ -1,11 +1,9 @@
 import { Bot, session } from 'grammy';
-import { randomUUID } from 'node:crypto';
 import { config } from '../config/env';
 import { logger } from '../logger/logger';
 import { DatabaseConnection } from '../storage/Database';
 import { SqliteMediaRepository } from '../storage/MediaRepository';
 import { ThumbnailRepository } from '../storage/ThumbnailRepository';
-import { FormatCacheRepository } from '../storage/FormatCacheRepository';
 import { ErrorRepository } from '../storage/ErrorRepository';
 import { CounterRepository } from '../storage/CounterRepository';
 import { ProcessRunner } from '../downloader/ProcessRunner';
@@ -30,14 +28,13 @@ import { ThumbnailUploader } from '../telegram/ThumbnailUploader';
 import { TelegramStorage } from '../telegram/TelegramStorage';
 import { MediaPipeline } from '../core/MediaPipeline';
 import { DownloadQueue } from '../queue/DownloadQueue';
-import { CancellationRegistry } from '../core/CancellationToken';
+import { JobManager } from './JobManager';
+import { ProgressReporter } from './ProgressReporter';
+import { buildChoiceKeyboard, buildVideoKeyboard, buildAudioKeyboard } from './keyboards';
 import { BotContext, SessionData } from '../types/bot';
-import { MediaMetadata } from '../types/media';
 import { AppError } from '../types/errors';
 import { assertValidUrl } from '../utils/url';
 import { rateLimit } from './rateLimit';
-import { ProgressReporter } from './ProgressReporter';
-import { buildFormatKeyboard, buildKindKeyboard } from './keyboard';
 
 function initialSession(): SessionData {
   return {};
@@ -50,7 +47,6 @@ export async function createBotApplication(): Promise<{
   const database = new DatabaseConnection();
   const mediaRepository = new SqliteMediaRepository(database);
   const thumbnailRepository = new ThumbnailRepository(database);
-  const formatCacheRepository = new FormatCacheRepository(database);
   const errorRepository = new ErrorRepository(database);
   const counterRepository = new CounterRepository(database);
 
@@ -91,16 +87,11 @@ export async function createBotApplication(): Promise<{
     providerRegistry,
     downloadEngine,
     telegramStorage,
-    formatCacheRepository,
     counterRepository,
     errorRepository,
   );
   const queue = new DownloadQueue(config.MAX_CONCURRENT_DOWNLOADS);
-  const cancellations = new CancellationRegistry();
-
-  // Short-lived job store mapping a jobId to its resolved metadata + url, so
-  // callback queries can act without re-fetching. Kept in memory by design.
-  const jobs = new Map<string, { url: string; metadata: MediaMetadata }>();
+  const jobManager = new JobManager(queue);
 
   await downloadEngine.recoverOrphans();
 
@@ -129,7 +120,16 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.command('start', async (ctx) => {
-    await ctx.reply('Send a supported media URL. I detect the provider, show real formats, download and store it in your Telegram Drive channel, then send it back. You can cancel any job.');
+    await ctx.reply('Send a supported media URL. I detect the provider, show formats, download, store it in your Telegram Drive channel, and send it back. Use /cancel to stop your downloads.');
+  });
+
+  bot.command('cancel', async (ctx) => {
+    const userId = ctx.from?.id;
+    if (!userId) {
+      return;
+    }
+    const count = jobManager.cancelAllForUser(userId);
+    await ctx.reply(count > 0 ? `cancelling ${count} download(s)` : 'nothing running to cancel');
   });
 
   bot.command('stats', async (ctx) => {
@@ -137,13 +137,13 @@ export async function createBotApplication(): Promise<{
       await ctx.reply('not for you');
       return;
     }
-    const [formatCount, uploads, cacheHits, errors] = await Promise.all([
-      formatCacheRepository.count(),
+    const [cacheCount, uploads, cacheHits, errors] = await Promise.all([
+      telegramStorage.cacheCount(),
       counterRepository.get('uploads'),
       counterRepository.get('cache_hits'),
       errorRepository.count(),
     ]);
-    await ctx.reply(`cached formats: ${formatCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
+    await ctx.reply(`cache: ${cacheCount}\nuploads: ${uploads}\ncache hits: ${cacheHits}\nerrors: ${errors}`);
   });
 
   bot.command('queue', async (ctx) => {
@@ -162,7 +162,8 @@ export async function createBotApplication(): Promise<{
     }
     const health = providerRegistry.health();
     const loaded = health.loaded.map((item) => `${item.name} v${item.version} (${item.priority})`).join('\n') || 'none';
-    await ctx.reply(`loaded:\n${loaded}`);
+    const failed = health.failed.map((item) => `${item.providerId}: ${item.reason}`).join('\n') || 'none';
+    await ctx.reply(`loaded:\n${loaded}\n\nfailed:\n${failed}`);
   });
 
   bot.command('health', async (ctx) => {
@@ -178,99 +179,104 @@ export async function createBotApplication(): Promise<{
     assertValidUrl(text);
 
     const inspected = await mediaInspector.inspect(text);
-    const jobId = randomUUID().slice(0, 8);
-    jobs.set(jobId, { url: text, metadata: inspected.metadata });
+    ctx.session.pendingUrl = text;
+    ctx.session.pendingMetadata = inspected.metadata;
 
-    const meta = inspected.metadata;
+    const platform = inspected.metadata.provider;
     const info = [
-      `🏷 ${meta.title}`,
-      `📀 ${meta.provider}`,
-      meta.duration ? `⏱ ${meta.duration}s` : undefined,
-      meta.uploader ? `👤 ${meta.uploader}` : undefined,
-    ]
-      .filter(Boolean)
-      .join('\n');
+      `title: ${inspected.metadata.title}`,
+      `platform: ${platform}`,
+      `duration: ${inspected.metadata.duration ?? 'unknown'}`,
+      `uploader: ${inspected.metadata.uploader ?? 'unknown'}`,
+    ].join('\n');
 
-    const keyboard = buildKindKeyboard(meta.formats, jobId);
-
-    if (meta.thumbnail) {
-      await ctx.replyWithPhoto(meta.thumbnail, { caption: info, reply_markup: keyboard }).catch(async () => {
-        await ctx.reply(info, { reply_markup: keyboard });
+    if (inspected.metadata.thumbnail) {
+      await ctx.replyWithPhoto(inspected.metadata.thumbnail, {
+        caption: info,
+        reply_markup: buildChoiceKeyboard(inspected.metadata.formats),
+      }).catch(async () => {
+        await ctx.reply(info, { reply_markup: buildChoiceKeyboard(inspected.metadata.formats) });
       });
-    } else {
-      await ctx.reply(info, { reply_markup: keyboard });
+      return;
     }
+
+    await ctx.reply(info, { reply_markup: buildChoiceKeyboard(inspected.metadata.formats) });
   });
 
-  bot.callbackQuery(/^kind:(video|audio):(.+)$/, async (ctx) => {
-    const kind = ctx.match[1] as 'video' | 'audio';
-    const jobId = ctx.match[2];
-    const job = jobs.get(jobId);
-    if (!job) {
+  bot.callbackQuery(/^choose:(.+)$/, async (ctx) => {
+    const action = ctx.match[1];
+    const metadata = ctx.session.pendingMetadata;
+    if (!metadata) {
       await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
-    const keyboard = buildFormatKeyboard(job.metadata.formats, kind, jobId);
+
+    if (action === 'cancel') {
+      ctx.session.pendingMetadata = undefined;
+      ctx.session.pendingUrl = undefined;
+      await ctx.editMessageCaption({ caption: 'cancelled' }).catch(async () => {
+        await ctx.editMessageText('cancelled').catch(() => undefined);
+      });
+      await ctx.answerCallbackQuery();
+      return;
+    }
+
+    const keyboard = action === 'video'
+      ? buildVideoKeyboard(metadata.formats)
+      : buildAudioKeyboard(metadata.formats);
+
     await ctx.editMessageReplyMarkup({ reply_markup: keyboard }).catch(() => undefined);
     await ctx.answerCallbackQuery();
   });
 
   bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
     const jobId = ctx.match[1];
-    const removed = queue.cancelPending(jobId);
-    const signalled = cancellations.cancel(jobId);
-    jobs.delete(jobId);
-    await ctx.answerCallbackQuery({ text: removed || signalled ? 'cancelling' : 'nothing to cancel' });
-    if (removed || signalled) {
-      await ctx.editMessageText('Cancelled').catch(() => undefined);
-    }
+    const cancelled = jobManager.cancel(jobId);
+    await ctx.answerCallbackQuery({ text: cancelled ? 'cancelling' : 'already done' });
   });
 
-  bot.callbackQuery(/^fmt:([^:]+):(.+)$/, async (ctx) => {
+  bot.callbackQuery(/^format:(.+)$/, async (ctx) => {
     const formatId = ctx.match[1];
-    const jobId = ctx.match[2];
-    const job = jobs.get(jobId);
+    const url = ctx.session.pendingUrl;
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
 
-    if (!job || !userId || !chatId) {
+    if (!url || !userId || !chatId) {
       await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
 
     await ctx.answerCallbackQuery();
-    await ctx.editMessageText('Queued...').catch(() => undefined);
-    const progressMessageId = ctx.callbackQuery.message?.message_id;
 
-    const token = cancellations.create(jobId);
-    const reporter =
-      progressMessageId !== undefined
-        ? new ProgressReporter(ctx.api, chatId, progressMessageId, `cancel:${jobId}`)
-        : undefined;
+    const jobId = `${userId}:${Date.now()}`;
+    const progressMessage = await ctx.reply('Queued...');
+    const reporter = new ProgressReporter(ctx.api, chatId, progressMessage.message_id, jobId);
 
-    void queue
-      .add(jobId, userId, async () => {
-        token.throwIfCancelled();
+    ctx.session.pendingMetadata = undefined;
+    ctx.session.pendingUrl = undefined;
+
+    void jobManager
+      .run(userId, jobId, async (token) => {
         const result = await pipeline.execute({
-          url: job.url,
+          url,
           formatId,
           userId,
           chatId,
-          token,
           onProgress: (update) => {
-            void reporter?.update(update.stage, update.ratio);
+            void reporter.update(update);
           },
+          shouldCancel: () => token.isCancelled,
         });
-        await reporter?.succeed(result.cached ? 'Served from Telegram Drive cache.' : 'Done. Uploaded to Telegram Drive.');
+        await reporter.finish(result.cached ? 'Served from Telegram Drive cache.' : 'Done. Uploaded to your Telegram Drive.');
         return result;
       })
       .catch(async (error) => {
-        const message = error instanceof AppError ? error.message : 'Job failed';
-        await reporter?.fail(message);
-      })
-      .finally(() => {
-        cancellations.release(jobId);
-        jobs.delete(jobId);
+        if (JobManager.isCancellation(error)) {
+          await reporter.finish('Cancelled.');
+          return;
+        }
+        const message = error instanceof AppError ? error.message : 'Download failed. Try again.';
+        await reporter.finish(message);
       });
   });
 
