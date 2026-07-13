@@ -11,9 +11,9 @@ function formatSize(bytes?: number): string {
 }
 
 /**
- * New API.
+ * Current API.
  *
- * buildKindKeyboard: the top-level Video / Audio / Cancel chooser. Only shows a
+ * buildKindKeyboard: top-level Video / Audio / Cancel chooser. Only shows a
  * bucket when the engine actually returned formats of that kind.
  */
 export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
@@ -29,13 +29,12 @@ export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
 }
 
 /**
- * New API.
+ * Current API.
  *
- * buildFormatKeyboard: builds the concrete per-quality keyboard for a given
- * kind. For video, qualities are ordered by the standard ladder and deduped to
- * the highest-bitrate variant per quality. For audio, formats are ordered by
- * bitrate descending and labelled with bitrate and codec. Only formats that
- * actually exist are shown.
+ * buildFormatKeyboard: builds the concrete per-quality keyboard for a kind.
+ * Video qualities are ordered by the standard ladder and deduped to the
+ * highest-bitrate variant per quality. Audio is ordered by bitrate descending
+ * and labelled with bitrate and codec. Only formats that actually exist show.
  */
 export function buildFormatKeyboard(formats: MediaFormat[], kind: MediaKind): InlineKeyboard {
   return kind === 'video' ? buildVideoFormatKeyboard(formats) : buildAudioFormatKeyboard(formats);
@@ -86,18 +85,30 @@ function buildAudioFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
   return keyboard;
 }
 
-export function buildProgressKeyboard(jobId: string): InlineKeyboard {
+/**
+ * Current API.
+ *
+ * buildCancelKeyboard: single cancel button for an in-flight download job.
+ */
+export function buildCancelKeyboard(jobId: string): InlineKeyboard {
   return new InlineKeyboard().text('✖ Cancel download', `cancel:${jobId}`);
+}
+
+/**
+ * Alias kept for the progress reporter, which imports buildProgressKeyboard.
+ * Delegates to buildCancelKeyboard so there is a single implementation.
+ */
+export function buildProgressKeyboard(jobId: string): InlineKeyboard {
+  return buildCancelKeyboard(jobId);
 }
 
 /**
  * Backward-compatible wrappers.
  *
- * The module was refactored from three functions
- * (buildChoiceKeyboard/buildVideoKeyboard/buildAudioKeyboard) to two
- * (buildKindKeyboard/buildFormatKeyboard). These wrappers restore the original
- * exports so existing callers and tests keep working without behaviour change.
- * The new API is preserved above.
+ * The module was refactored to buildKindKeyboard / buildFormatKeyboard. These
+ * wrappers restore the original three exports so existing callers and tests
+ * keep working. They only delegate to the current API; no logic is duplicated
+ * and no behaviour changes.
  */
 export function buildChoiceKeyboard(formats: MediaFormat[]): InlineKeyboard {
   return buildKindKeyboard(formats);
