@@ -13,6 +13,9 @@ export class MediaSender {
     const file = new InputFile(artifact.filePath, path.basename(artifact.filePath));
     const caption = this.buildCaption(artifact);
     const mediaType = artifact.probe.mediaType;
+    
+    // Convert thumbnail file_id string to InputFile if provided
+    const thumbnail = thumbnailFileId ? new InputFile(thumbnailFileId) : undefined;
 
     switch (mediaType) {
       case 'video': {
@@ -22,7 +25,7 @@ export class MediaSender {
           width: artifact.probe.width,
           height: artifact.probe.height,
           supports_streaming: true,
-          thumbnail: thumbnailFileId,
+          thumbnail,
         });
         return this.fromFileId(message.message_id, message.video?.file_id, mediaType);
       }
@@ -32,7 +35,7 @@ export class MediaSender {
           duration: artifact.metadata.duration,
           performer: artifact.metadata.uploader,
           title: artifact.metadata.title,
-          thumbnail: thumbnailFileId,
+          thumbnail,
         });
         return this.fromFileId(message.message_id, message.audio?.file_id, mediaType);
       }
@@ -65,7 +68,7 @@ export class MediaSender {
       default: {
         const message = await this.api.sendDocument(chatId, file, {
           caption,
-          thumbnail: thumbnailFileId,
+          thumbnail,
         });
         return this.fromFileId(message.message_id, message.document?.file_id, 'document');
       }

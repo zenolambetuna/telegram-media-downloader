@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { logger } from '../logs/logger';
+import { logger } from '../logger/logger';
 
 export interface ProcessResult {
   stdout: string;

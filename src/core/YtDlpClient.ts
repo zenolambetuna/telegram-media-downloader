@@ -8,9 +8,9 @@ export class YtDlpClient {
 
   async fetchJson(url: string): Promise<unknown> {
     const result = await this.processRunner.run(
-      config.ytDlpPath,
+      config.YT_DLP_PATH,
       ['--dump-single-json', '--no-warnings', url],
-      config.downloadTimeoutMs,
+      config.DOWNLOAD_TIMEOUT_MS,
     );
 
     return JSON.parse(result.stdout);
@@ -20,9 +20,9 @@ export class YtDlpClient {
     await ensureDirectory(outputDir);
     const outputTemplate = path.join(outputDir, '%(title).200B-%(id)s.%(ext)s');
     await this.processRunner.run(
-      config.ytDlpPath,
+      config.YT_DLP_PATH,
       ['-f', formatId, '-o', outputTemplate, '--no-warnings', url],
-      config.downloadTimeoutMs,
+      config.DOWNLOAD_TIMEOUT_MS,
     );
 
     const probe = await this.processRunner.run(
