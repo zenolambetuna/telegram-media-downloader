@@ -54,24 +54,7 @@ export class MetadataService {
       vbr?: number;
       abr?: number;
     }>;
-    console.log('[DEBUG] RAW formats BEFORE FormatResolver:', {
-      total: rawFormatsBeforeResolver.length,
-      samples: rawFormatsBeforeResolver.slice(0, 10).map(f => ({
-        format_id: f.format_id,
-        ext: f.ext,
-        vcodec: f.vcodec,
-        acodec: f.acodec,
-        width: f.width,
-        height: f.height,
-        protocol: f.protocol,
-        filesize: f.filesize,
-        filesize_approx: f.filesize_approx,
-        format_note: f.format_note,
-        tbr: f.tbr,
-        vbr: f.vbr,
-        abr: f.abr,
-      }))
-    });
+    console.log('[DEBUG] RAW formats BEFORE FormatResolver (COMPLETE):', JSON.stringify(rawFormatsBeforeResolver, null, 2));
 
     const formatResolverOutput = this.formatResolver.resolve((raw.formats ?? []) as never[]);
     const formats = formatResolverOutput;

@@ -221,16 +221,27 @@ export async function createBotApplication(): Promise<{
 
   bot.callbackQuery(/^kind:(video|audio)$/, async (ctx) => {
     const kind = ctx.match[1] as 'video' | 'audio';
+    console.log('[CALLBACK] received kind:', kind);
+    console.log('[CALLBACK] data:', ctx.callbackQuery.data);
     const metadata = ctx.session.pendingMetadata;
+    console.log('[CALLBACK] session found:', !!metadata);
     if (!metadata) {
+      console.log('[CALLBACK] ERROR: no pendingMetadata in session');
       await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
+    console.log('[CALLBACK] metadata formats count:', metadata.formats.length);
     const keyboard = buildFormatKeyboard(metadata.formats, kind);
-    await ctx.editMessageReplyMarkup({ reply_markup: keyboard }).catch(async () => {
+    console.log('[CALLBACK] sending format keyboard');
+    try {
+      await ctx.editMessageReplyMarkup({ reply_markup: keyboard });
+      console.log('[CALLBACK] editMessageReplyMarkup succeeded');
+    } catch (error) {
+      console.log('[CALLBACK] editMessageReplyMarkup failed, sending new message:', error);
       await ctx.reply(`Pick ${kind} quality`, { reply_markup: keyboard });
-    });
+    }
     await ctx.answerCallbackQuery();
+    console.log('[CALLBACK] answered');
   });
 
   bot.callbackQuery('back', async (ctx) => {
@@ -261,25 +272,32 @@ export async function createBotApplication(): Promise<{
 
   bot.callbackQuery(/^fmt:(\d+)$/, async (ctx) => {
     const index = Number(ctx.match[1]);
+    console.log('[CALLBACK] received fmt:', index);
     const metadata = ctx.session.pendingMetadata;
     const url = ctx.session.pendingUrl;
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
 
+    console.log('[CALLBACK] session found:', !!metadata, !!url, !!userId, !!chatId);
     if (!metadata || !url || userId === undefined || chatId === undefined) {
+      console.log('[CALLBACK] ERROR: missing session data');
       await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
     const format = metadata.formats[index];
+    console.log('[CALLBACK] selected format:', format ? { id: format.id, kind: format.kind, quality: format.quality } : null);
     if (!format) {
+      console.log('[CALLBACK] ERROR: format not found at index', index);
       await ctx.answerCallbackQuery({ text: 'that format is gone' });
       return;
     }
 
     await ctx.answerCallbackQuery();
+    console.log('[CALLBACK] answered callback');
 
     const jobToken = randomUUID().slice(0, 8);
     const cancellation = cancellations.create(jobToken);
+    console.log('[CALLBACK] download started, token:', jobToken);
     const progressMessage = await ctx.reply('Queued', { reply_markup: buildCancelKeyboard(jobToken) });
     const reporter = new ProgressReporter(ctx.api, chatId, progressMessage.message_id, buildCancelKeyboard(jobToken));
 
@@ -293,6 +311,7 @@ export async function createBotApplication(): Promise<{
     void queue
       .add(jobToken, async () => {
         cancellation.throwIfCancelled();
+        console.log('[CALLBACK] executing pipeline');
         return await pipeline.execute({
           url: url2,
           formatId,
@@ -306,9 +325,11 @@ export async function createBotApplication(): Promise<{
         });
       })
       .then(async (result) => {
+        console.log('[CALLBACK] download finished, cached:', result.cached);
         await reporter.finalize(result.cached ? '✅ Served instantly from Telegram Drive cache' : '✅ Done');
       })
       .catch(async (error) => {
+        console.log('[CALLBACK] ERROR:', error);
         const message = error instanceof AppError && error.code === 'CANCELLED'
           ? '🛑 Cancelled'
           : `⚠️ ${error instanceof Error ? error.message : 'job failed'}`;
