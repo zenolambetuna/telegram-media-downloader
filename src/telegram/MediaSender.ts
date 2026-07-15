@@ -2,10 +2,6 @@ import { Api, InputFile } from 'grammy';
 import path from 'node:path';
 import { DownloadArtifact, MediaType, UploadResult } from '../types/media';
 
-/**
- * MediaSender is the only place that knows how to map a downloaded media
- * artifact to the correct Telegram send method. Providers never touch this.
- */
 export class MediaSender {
   constructor(private readonly api: Api) {}
 
@@ -13,9 +9,7 @@ export class MediaSender {
     const file = new InputFile(artifact.filePath, path.basename(artifact.filePath));
     const caption = this.buildCaption(artifact);
     const mediaType = artifact.probe.mediaType;
-    
-    // Convert thumbnail file_id string to InputFile if provided
-    const thumbnail = thumbnailFileId ? new InputFile(thumbnailFileId) : undefined;
+    const thumbnail = thumbnailFileId as unknown as InputFile | undefined;
 
     switch (mediaType) {
       case 'video': {
@@ -57,6 +51,7 @@ export class MediaSender {
           duration: artifact.metadata.duration,
           width: artifact.probe.width,
           height: artifact.probe.height,
+          thumbnail,
         });
         return this.fromFileId(message.message_id, message.animation?.file_id, mediaType);
       }
