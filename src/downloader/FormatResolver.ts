@@ -44,10 +44,19 @@ export class FormatResolver {
   }
 
   private normalize(format: RawFormat): NormalizedFormat {
-    const hasVideo = Boolean(format.vcodec && format.vcodec !== 'none');
+    const hasVideo = Boolean(
+      (format.vcodec && format.vcodec !== 'none') ||
+        ((format.width || format.height) && (!format.acodec || format.acodec === 'none')),
+    );
     const hasAudio = Boolean(format.acodec && format.acodec !== 'none');
     const kind: 'video' | 'audio' = hasVideo ? 'video' : 'audio';
-    const quality = this.mapQuality(kind, format.height);
+    // Use height for horizontal videos, width for vertical videos to get correct quality label
+    const dimension = format.width && format.height
+      ? format.width > format.height
+        ? format.height
+        : format.width
+      : format.height || format.width;
+    const quality = this.mapQuality(kind, dimension);
     const bitrateKbps = format.vbr ?? format.abr ?? format.tbr;
 
     return {
