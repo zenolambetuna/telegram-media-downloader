@@ -45,11 +45,10 @@ export class FormatResolver {
 
   private normalize(format: RawFormat): NormalizedFormat {
     const hasVideo = Boolean(
-      (format.vcodec && format.vcodec !== 'none') ||
-        ((format.width || format.height) && (!format.acodec || format.acodec === 'none')),
-    );
+      format.vcodec && format.vcodec !== 'none',
+    ) || Boolean(format.width && format.height);
     const hasAudio = Boolean(format.acodec && format.acodec !== 'none');
-    const kind: 'video' | 'audio' = hasVideo ? 'video' : 'audio';
+    const kind: 'video' | 'audio' = hasVideo && !hasAudio ? 'video' : 'audio';
     // Use height for horizontal videos, width for vertical videos to get correct quality label
     const dimension = format.width && format.height
       ? format.width > format.height
@@ -59,11 +58,17 @@ export class FormatResolver {
     const quality = this.mapQuality(kind, dimension);
     const bitrateKbps = format.vbr ?? format.abr ?? format.tbr;
 
+    // TikTok/vertical videos: dimensions may exist even if vcodec is blank/unknown.
+    // Treat any format with both width+height as video-capable unless audio is present.
+    const resolvedHasVideo = hasVideo || Boolean(format.width && format.height);
+    const resolvedHasAudio = hasAudio;
+    const resolvedKind: 'video' | 'audio' = resolvedHasVideo && !resolvedHasAudio ? 'video' : 'audio';
+
     return {
       id: format.format_id ?? 'unknown',
-      kind,
+      kind: resolvedKind,
       quality,
-      label: kind === 'audio' ? `Audio ${format.abr ? `${Math.round(format.abr)}kbps` : format.ext ?? ''}`.trim() : quality,
+      label: resolvedKind === 'audio' ? `Audio ${format.abr ? `${Math.round(format.abr)}kbps` : format.ext ?? ''}`.trim() : quality,
       container: format.container ?? format.ext ?? 'bin',
       extension: format.ext ?? 'bin',
       resolution: format.width && format.height ? `${format.width}x${format.height}` : format.resolution,
@@ -71,11 +76,11 @@ export class FormatResolver {
       height: format.height,
       fps: format.fps,
       bitrate: bitrateKbps ? Math.round(bitrateKbps * 1000) : undefined,
-      videoCodec: hasVideo ? format.vcodec : undefined,
-      audioCodec: hasAudio ? format.acodec : undefined,
+      videoCodec: resolvedHasVideo ? format.vcodec : undefined,
+      audioCodec: resolvedHasAudio ? format.acodec : undefined,
       filesize: format.filesize ?? format.filesize_approx,
-      hasAudio,
-      hasVideo,
+      hasAudio: resolvedHasAudio,
+      hasVideo: resolvedHasVideo,
     };
   }
 
@@ -96,6 +101,8 @@ export class FormatResolver {
 
   private dedupeByQuality(formats: NormalizedFormat[]): NormalizedFormat[] {
     const bestByKey = new Map<string, NormalizedFormat>();
+    const videoFormats = formats.filter((format) => format.kind === 'video');
+    const audioFormats = formats.filter((format) => format.kind === 'audio');
 
     for (const format of formats) {
       const key = `${format.kind}:${format.quality}`;
@@ -105,6 +112,7 @@ export class FormatResolver {
       }
     }
 
-    return [...bestByKey.values()].sort((left, right) => (right.height ?? 0) - (left.height ?? 0));
+    const deduped = [...bestByKey.values()].sort((left, right) => (right.height ?? 0) - (left.height ?? 0));
+    return deduped;
   }
 }
