@@ -41,7 +41,16 @@ const HEIGHT_TO_QUALITY: Array<{ maxHeight: number; label: QualityLabel }> = [
  * 4. Returns a ResolvedMediaInfo with clear hasVideo/hasAudio/supportsResolutionSelection
  */
 export class FormatResolver {
-  resolve(rawFormats: RawFormat[], platform: string, title: string, url: string): ResolvedMediaInfo {
+  // Overload: 1 arg returns NormalizedFormat[] (legacy/test compat)
+  resolve(rawFormats: RawFormat[]): NormalizedFormat[];
+  // Overload: 4 args returns ResolvedMediaInfo (production use)
+  resolve(rawFormats: RawFormat[], platform: string, title: string, url: string): ResolvedMediaInfo;
+  resolve(rawFormats: RawFormat[], platform?: string, title?: string, url?: string): NormalizedFormat[] | ResolvedMediaInfo {
+    // Legacy mode: 1 argument → return NormalizedFormat[]
+    if (typeof platform !== 'string') {
+      return this.resolveLegacy(rawFormats);
+    }
+
     const valid = rawFormats.filter((f) => f.format_id && f.ext);
     const allNormalized: MediaFormat[] = valid.map((f) => this.normalize(f));
     const unique: MediaFormat[] = allNormalized.filter(
@@ -69,9 +78,9 @@ export class FormatResolver {
 
     return {
       platform,
-      title,
-      originalUrl: url,
-      canonicalUrl: url,
+      title: title ?? '',
+      originalUrl: url ?? '',
+      canonicalUrl: url ?? '',
       hasVideo,
       hasAudio,
       videoFormats: dedupedVideos,
@@ -161,7 +170,7 @@ export class FormatResolver {
     );
   }
 
-  resolveLegacy(rawFormats: RawFormat[]): NormalizedFormat[] {
+  private resolveLegacy(rawFormats: RawFormat[]): NormalizedFormat[] {
     const normalized = rawFormats
       .filter((format) => format.format_id && format.ext)
       .map((f) => this.normalizeLegacy(f))

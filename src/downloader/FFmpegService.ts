@@ -39,4 +39,44 @@ export class FFmpegService {
     });
 
     await this.assertExists(outputPath, 'merge produced no output');
-    logger.info({
+    logger.info({ outputPath }, 'merge tracks completed');
+    return outputPath;
+  }
+
+  async extractThumbnail(mediaPath: string, workspace: string): Promise<string> {
+    const thumbnailPath = path.join(workspace, 'thumbnail.jpg');
+    logger.info({ mediaPath, thumbnailPath }, 'extracting thumbnail');
+
+    try {
+      await this.processRunner.run(
+        config.FFMPEG_PATH,
+        [
+          '-y',
+          '-i',
+          mediaPath,
+          '-vf',
+          'thumbnail,scale=320:-1',
+          '-frames:v',
+          '1',
+          thumbnailPath,
+        ],
+        config.DOWNLOAD_TIMEOUT_MS,
+      );
+    } catch (error) {
+      logger.warn({ error, mediaPath }, 'thumbnail extraction failed');
+      throw new AppError('Failed to extract thumbnail', 'DOWNLOAD_FAILED');
+    }
+
+    await this.assertExists(thumbnailPath, 'thumbnail extraction produced no output');
+    logger.info({ thumbnailPath }, 'thumbnail extracted');
+    return thumbnailPath;
+  }
+
+  private async assertExists(filePath: string, message: string): Promise<void> {
+    try {
+      await access(filePath);
+    } catch {
+      throw new AppError(message, 'MERGE_FAILED');
+    }
+  }
+}
