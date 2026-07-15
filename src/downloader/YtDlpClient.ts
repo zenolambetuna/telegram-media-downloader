@@ -5,6 +5,11 @@ import { classifyDownloadError } from '../types/errors';
 import { logger } from '../logger/logger';
 import { ProcessRunner } from './ProcessRunner';
 
+/**
+ * YtDlpClient is the ONLY place in the codebase that shells out to yt-dlp.
+ * It is used exclusively by the Universal Download Engine. Providers must
+ * never import this.
+ */
 export class YtDlpClient {
   constructor(private readonly processRunner: ProcessRunner) {}
 
@@ -19,7 +24,6 @@ export class YtDlpClient {
       );
       const data = JSON.parse(result.stdout) as Record<string, unknown>;
       const rawFormats = (data.formats ?? []) as Array<Record<string, unknown>>;
-      console.log('[DEBUG] RAW yt-dlp formats count:', rawFormats.length);
       return data;
     } catch (error) {
       throw classifyDownloadError(error instanceof Error ? error.message : String(error));
@@ -61,7 +65,9 @@ export class YtDlpClient {
           newestMtime = info.mtimeMs;
           newestFile = file;
         }
-      } catch { /* skip unreadable */ }
+      } catch {
+        /* skip unreadable */
+      }
     }
 
     const result = path.join(outputDir, newestFile);
