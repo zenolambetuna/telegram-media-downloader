@@ -23,6 +23,12 @@ export interface PipelineRequest {
   onProgress?: (update: ProgressUpdate) => void;
 }
 
+/**
+ * MediaPipeline wires the Universal Download Engine to the Telegram Storage
+ * Engine. It performs format-aware cache reuse, cooperative cancellation, and
+ * a real on-disk size guard before upload. It never calls yt-dlp, ffmpeg, or
+ * Telegram directly.
+ */
 export class MediaPipeline {
   constructor(
     private readonly providerRegistry: ProviderRegistry,
@@ -36,6 +42,7 @@ export class MediaPipeline {
     const canonicalUrl = normalizeUrl(request.url);
     const platform = this.providerRegistry.platformFor(request.url);
 
+    // Format-aware dedup: reuse only when the same media AND quality exists.
     const cached = await this.telegramStorage.existsByFormat(canonicalUrl, request.quality);
     if (cached) {
       const newMessageId = await this.telegramStorage.copy(request.chatId, cached.messageId);
@@ -66,8 +73,10 @@ export class MediaPipeline {
     };
 
     try {
+      // Cancellation checkpoint before the expensive upload.
       request.cancellation.throwIfCancelled();
 
+      // Real size from disk (probe size can be an estimate or missing).
       const actualSize = (await stat(artifact.filePath)).size;
       artifact.probe.size = actualSize;
       const limitBytes = config.MAX_TELEGRAM_UPLOAD_MB * 1024 * 1024;
@@ -83,6 +92,8 @@ export class MediaPipeline {
       const deliveredMessageId = await this.telegramStorage.copy(request.chatId, stored.messageId);
       await this.counterRepository.increment('uploads');
 
+      // Clean up temp file ONLY after upload fully succeeds.
+      // Deleting before grammY sends the file causes "Upload failed after retries".
       await this.telegramStorage.deleteTemp(artifact.filePath);
 
       return { messageId: deliveredMessageId, cached: false };
