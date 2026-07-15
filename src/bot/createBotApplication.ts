@@ -109,28 +109,21 @@ export async function createBotApplication(): Promise<{
 
   bot.use(session({ initial: initialSession }));
 
-  // Inject pipeline into context
   bot.use(async (ctx, next) => {
     ctx.pipeline = pipeline;
     await next();
   });
 
-  // -- Debug logging middleware --
   bot.use(async (ctx, next) => {
     if (ctx.callbackQuery) {
       logger.info(
-        {
-          callbackData: ctx.callbackQuery.data,
-          userId: ctx.from?.id,
-          messageId: ctx.callbackQuery.message?.message_id,
-        },
+        { callbackData: ctx.callbackQuery.data, userId: ctx.from?.id, messageId: ctx.callbackQuery.message?.message_id },
         'Callback received',
       );
     }
     await next();
   });
 
-  // -- Rate limiter --
   bot.use(async (ctx, next) => {
     if (ctx.from) {
       await rateLimit(ctx.from.id);
@@ -138,7 +131,6 @@ export async function createBotApplication(): Promise<{
     await next();
   });
 
-  // -- Global error handler --
   bot.use(async (ctx, next) => {
     try {
       await next();
@@ -154,7 +146,6 @@ export async function createBotApplication(): Promise<{
     }
   });
 
-  // -- Admin commands --
   bot.command('start', async (ctx) => {
     await ctx.reply(
       'Send a supported media URL. I detect the provider, show real available formats, download and merge, store it in your Telegram Drive channel, and send it back. Duplicate media at the same quality is reused instantly.',
@@ -186,31 +177,19 @@ export async function createBotApplication(): Promise<{
     await ctx.reply(`loaded:\n${loaded}\n\nfailed:\n${failed}`);
   });
 
-  // ============================================================
-  // LINK INPUT → Detect → Resolve → Show 🎥 MP4 / 🎵 MP3 / ❌ Cancel
-  // ============================================================
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text.trim();
     assertValidUrl(text);
 
-    // Get resolved media info via FormatResolver
     const platform = providerRegistry.platformFor(text);
     const resolved = await metadataService.fetch(text, platform);
 
-    // Store in session for callback handlers
     ctx.session.pendingUrl = text;
     ctx.session.pendingInfo = resolved;
 
     logger.info(
-      {
-        platform: resolved.platform,
-        hasVideo: resolved.hasVideo,
-        hasAudio: resolved.hasAudio,
-        videoCount: resolved.videoFormats.length,
-        audioCount: resolved.audioFormats.length,
-        supportsResolutionSelection: resolved.supportsResolutionSelection,
-      },
-      'Media resolved — building keyboard',
+      { platform: resolved.platform, hasVideo: resolved.hasVideo, hasAudio: resolved.hasAudio, videoCount: resolved.videoFormats.length, audioCount: resolved.audioFormats.length, supportsResolutionSelection: resolved.supportsResolutionSelection },
+      'Media resolved - building keyboard',
     );
 
     const durationText = resolved.duration ? `${resolved.duration}s` : 'unknown';
@@ -234,9 +213,6 @@ export async function createBotApplication(): Promise<{
     }
   });
 
-  // ============================================================
-  // CALLBACK: "media:video" — user pressed 🎥 MP4
-  // ============================================================
   bot.callbackQuery('media:video', async (ctx) => {
     const info = ctx.session.pendingInfo;
     const url = ctx.session.pendingUrl;
@@ -246,11 +222,10 @@ export async function createBotApplication(): Promise<{
     logger.info({ hasInfo: !!info, hasUrl: !!url }, 'media:video callback');
 
     if (!info || !url || userId === undefined || chatId === undefined) {
-      await ctx.answerCallbackQuery({ text: '⏳ Session expired — send the URL again' });
+      await ctx.answerCallbackQuery({ text: 'Session expired - send the URL again' });
       return;
     }
 
-    // Check if we need a resolution picker
     if (info.supportsResolutionSelection) {
       logger.info({ platform: info.platform, resolutions: info.videoFormats.map(f => f.quality) }, 'Showing resolution picker');
       const keyboard = buildResolutionKeyboard(info);
@@ -261,7 +236,6 @@ export async function createBotApplication(): Promise<{
       }
       await ctx.answerCallbackQuery();
     } else {
-      // Direct download — no resolution picker needed
       const format = info.bestVideo;
       if (!format) {
         logger.error({ platform: info.platform }, 'No best video despite hasVideo=true');
@@ -278,9 +252,6 @@ export async function createBotApplication(): Promise<{
     }
   });
 
-  // ============================================================
-  // CALLBACK: "media:audio" — user pressed 🎵 MP3
-  // ============================================================
   bot.callbackQuery('media:audio', async (ctx) => {
     const info = ctx.session.pendingInfo;
     const url = ctx.session.pendingUrl;
@@ -290,7 +261,7 @@ export async function createBotApplication(): Promise<{
     logger.info({ hasInfo: !!info, hasUrl: !!url }, 'media:audio callback');
 
     if (!info || !url || userId === undefined || chatId === undefined) {
-      await ctx.answerCallbackQuery({ text: '⏳ Session expired — send the URL again' });
+      await ctx.answerCallbackQuery({ text: 'Session expired - send the URL again' });
       return;
     }
 
@@ -308,9 +279,6 @@ export async function createBotApplication(): Promise<{
     await startDownload(ctx, url, format.id, format.quality, userId, chatId, queue, cancellations);
   });
 
-  // ============================================================
-  // CALLBACK: "format:{formatId}" — user picked a specific resolution
-  // ============================================================
   bot.callbackQuery(/^format:(.+)$/, async (ctx) => {
     const formatId = ctx.match[1];
     const info = ctx.session.pendingInfo;
@@ -321,7 +289,7 @@ export async function createBotApplication(): Promise<{
     logger.info({ formatId, hasInfo: !!info, hasUrl: !!url }, 'format: callback');
 
     if (!info || !url || userId === undefined || chatId === undefined) {
-      await ctx.answerCallbackQuery({ text: '⏳ Session expired — send the URL again' });
+      await ctx.answerCallbackQuery({ text: 'Session expired - send the URL again' });
       return;
     }
 
@@ -331,7 +299,7 @@ export async function createBotApplication(): Promise<{
       return;
     }
 
-    logger.info({ formatId: format.id, quality: format.quality, kind: format.kind }, 'Format selected — starting download');
+    logger.info({ formatId: format.id, quality: format.quality, kind: format.kind }, 'Format selected - starting download');
     await ctx.answerCallbackQuery();
     ctx.session.pendingUrl = undefined;
     ctx.session.pendingInfo = undefined;
@@ -339,9 +307,6 @@ export async function createBotApplication(): Promise<{
     await startDownload(ctx, url, format.id, format.quality, userId, chatId, queue, cancellations);
   });
 
-  // ============================================================
-  // CALLBACK: "abort"
-  // ============================================================
   bot.callbackQuery('abort', async (ctx) => {
     ctx.session.pendingUrl = undefined;
     ctx.session.pendingInfo = undefined;
@@ -349,9 +314,6 @@ export async function createBotApplication(): Promise<{
     await ctx.answerCallbackQuery({ text: 'Cancelled' });
   });
 
-  // ============================================================
-  // CALLBACK: "cancel:{jobToken}"
-  // ============================================================
   bot.callbackQuery(/^cancel:(.+)$/, async (ctx) => {
     const jobToken = ctx.match[1];
     const cancelledPending = queue.cancelPending(jobToken);
@@ -376,9 +338,6 @@ export async function createBotApplication(): Promise<{
   };
 }
 
-// ============================================================
-// Shared download starter
-// ============================================================
 async function startDownload(
   ctx: BotContext,
   url: string,
@@ -391,7 +350,7 @@ async function startDownload(
 ): Promise<void> {
   const jobToken = randomUUID().slice(0, 8);
   const cancellation = cancellations.create(jobToken);
-  const progressMessage = await ctx.reply('⏳ Queued...', { reply_markup: buildCancelKeyboard(jobToken) });
+  const progressMessage = await ctx.reply('Queued...', { reply_markup: buildCancelKeyboard(jobToken) });
   const reporter = new ProgressReporter(ctx.api, chatId, progressMessage.message_id, buildCancelKeyboard(jobToken));
 
   logger.info({ jobToken, formatId, quality, url }, 'Download started');
@@ -413,12 +372,12 @@ async function startDownload(
     })
     .then(async (result) => {
       logger.info({ jobToken, cached: result.cached }, 'Download finished');
-      await reporter.finalize(result.cached ? '✅ Served instantly from Telegram Drive cache' : '✅ Done');
+      await reporter.finalize(result.cached ? 'Served instantly from Telegram Drive cache' : 'Done');
     })
     .catch(async (error) => {
       const message = error instanceof AppError && error.code === 'CANCELLED'
-        ? '🛑 Cancelled'
-        : `⚠️ ${error instanceof Error ? error.message : 'Job failed'}`;
+        ? 'Cancelled'
+        : `Error: ${error instanceof Error ? error.message : 'Job failed'}`;
       logger.error({ jobToken, error: error instanceof Error ? error.message : String(error) }, 'Download failed');
       await reporter.finalize(message);
     })
