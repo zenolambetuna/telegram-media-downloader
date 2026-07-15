@@ -38,9 +38,42 @@ export class MetadataService {
       'metadata timeout',
     )) as RawMetadata;
 
-    const formats = this.formatResolver.resolve((raw.formats ?? []) as never[]);
+    const formatResolverOutput = this.formatResolver.resolve((raw.formats ?? []) as never[]);
+    const formats = formatResolverOutput;
+
+    // DEBUG: Log FormatResolver output
+    console.log('[DEBUG] FormatResolver.resolve() output:', {
+      total: formats.length,
+      video: formats.filter(f => f.kind === 'video').length,
+      audio: formats.filter(f => f.kind === 'audio').length,
+      samples: formats.map(f => ({ id: f.id, kind: f.kind, quality: f.quality, hasVideo: f.hasVideo, hasAudio: f.hasAudio }))
+    });
+
     const isLive = Boolean(raw.is_live) || raw.live_status === 'is_live';
     const isPlaylist = raw._type === 'playlist';
+
+    const mappedFormats = formats.map((format) => ({
+      id: format.id,
+      kind: format.kind,
+      label: format.label,
+      extension: format.extension,
+      quality: format.quality,
+      filesize: format.filesize,
+      width: format.width,
+      height: format.height,
+      fps: format.fps,
+      bitrate: format.bitrate,
+      audioCodec: format.audioCodec,
+      videoCodec: format.videoCodec,
+    }));
+
+    // DEBUG: Log mapped MediaFormat[]
+    console.log('[DEBUG] Mapped MediaFormat[]:', {
+      total: mappedFormats.length,
+      video: mappedFormats.filter(f => f.kind === 'video').length,
+      audio: mappedFormats.filter(f => f.kind === 'audio').length,
+      types: mappedFormats.map(f => ({ id: f.id, kind: f.kind, quality: f.quality }))
+    });
 
     const metadata: MediaMetadata = {
       id: raw.id ?? 'unknown',
@@ -53,20 +86,7 @@ export class MetadataService {
       thumbnail: raw.thumbnail,
       uploader: raw.uploader,
       filesize: raw.filesize,
-      formats: formats.map((format) => ({
-        id: format.id,
-        kind: format.kind,
-        label: format.label,
-        extension: format.extension,
-        quality: format.quality,
-        filesize: format.filesize,
-        width: format.width,
-        height: format.height,
-        fps: format.fps,
-        bitrate: format.bitrate,
-        audioCodec: format.audioCodec,
-        videoCodec: format.videoCodec,
-      })),
+      formats: mappedFormats,
     };
 
     return { metadata, formats, isLive, isPlaylist };

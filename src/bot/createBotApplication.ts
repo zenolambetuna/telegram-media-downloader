@@ -180,6 +180,23 @@ export async function createBotApplication(): Promise<{
     ctx.session.pendingUrl = text;
     ctx.session.pendingMetadata = inspected.metadata;
 
+    console.log('[DEBUG] Session updated:', {
+      pendingUrl: ctx.session.pendingUrl,
+      metadataHasFormats: !!(inspected.metadata.formats?.length),
+      metadataFormatCount: inspected.metadata.formats.length
+    });
+
+    // DEBUG: Log format counts from metadata
+    const videoCount = inspected.metadata.formats.filter(f => f.kind === 'video').length;
+    const audioCount = inspected.metadata.formats.filter(f => f.kind === 'audio').length;
+    console.log('[DEBUG] metadata.formats:', {
+      total: inspected.metadata.formats.length,
+      video: videoCount,
+      audio: audioCount,
+      types: inspected.metadata.formats.map(f => ({ id: f.id, kind: f.kind, quality: f.quality }))
+    });
+    console.log('[DEBUG] NormalizedFormat from inspect():', inspected.formats.map(f => ({ id: f.id, kind: f.kind, hasVideo: f.hasVideo, hasAudio: f.hasAudio })));
+
     const durationText = inspected.metadata.duration ? `${inspected.metadata.duration}s` : 'unknown';
     const info = [
       `📀 ${inspected.metadata.provider}`,
@@ -191,6 +208,7 @@ export async function createBotApplication(): Promise<{
       .join('\n');
 
     const keyboard = buildKindKeyboard(inspected.metadata.formats);
+    console.log('[DEBUG] Sending message with keyboard, formats count:', inspected.metadata.formats.length);
     if (inspected.metadata.thumbnail) {
       await ctx.replyWithPhoto(inspected.metadata.thumbnail, { caption: info, reply_markup: keyboard }).catch(async () => {
         await ctx.reply(info, { reply_markup: keyboard });
@@ -198,6 +216,7 @@ export async function createBotApplication(): Promise<{
     } else {
       await ctx.reply(info, { reply_markup: keyboard });
     }
+    console.log('[DEBUG] Message sent');
   });
 
   bot.callbackQuery(/^kind:(video|audio)$/, async (ctx) => {

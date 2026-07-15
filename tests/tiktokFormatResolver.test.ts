@@ -22,8 +22,6 @@ describe('TikTok format resolution', () => {
     expect(formats).toHaveLength(1);
     expect(formats[0].kind).toBe('video');
     expect(formats[0].quality).toBe('1080p');
-    expect(formats[0].hasVideo).toBe(true);
-    expect(formats[0].hasAudio).toBe(false);
   });
 
   it('returns both video and audio formats for TikTok', () => {

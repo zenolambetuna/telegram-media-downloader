@@ -18,6 +18,9 @@ function formatSize(bytes?: number): string {
  */
 export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
   const keyboard = new InlineKeyboard();
+  const videoCount = formats.filter((format) => format.kind === 'video').length;
+  const audioCount = formats.filter((format) => format.kind === 'audio').length;
+  console.log('[DEBUG] buildKindKeyboard input:', { total: formats.length, video: videoCount, audio: audioCount });
   if (formats.some((format) => format.kind === 'video')) {
     keyboard.text('🎬 Video', 'choose:video');
   }
@@ -25,6 +28,7 @@ export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
     keyboard.text('🎵 Audio', 'choose:audio');
   }
   keyboard.text('❌ Cancel', 'choose:cancel');
+  console.log('[DEBUG] Keyboard buttons:', keyboard.inline_keyboard.flat().map(b => b.text));
   return keyboard;
 }
 
