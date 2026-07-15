@@ -13,37 +13,81 @@ import { ProcessRunner } from './ProcessRunner';
 export class YtDlpClient {
   constructor(private readonly processRunner: ProcessRunner) {}
 
+  /**
+   * Detect if a URL belongs to TikTok to apply platform-specific args.
+   */
+  private isTiktokUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      return parsed.hostname.toLowerCase().includes('tiktok.com');
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Build TikTok-specific yt-dlp arguments.
+   * TikTok requires extractor-args to bypass Cloudflare and region blocks.
+   */
+  private getTiktokExtractorArgs(): string[] {
+    return [
+      '--extractor-args',
+      'tiktok:player_client=iphone;player_region=US',
+    ];
+  }
+
+  /**
+   * Build common yt-dlp arguments with proper headers for anti-bot protection.
+   */
+  private getCommonArgs(): string[] {
+    return [
+      '--no-warnings',
+      '--no-playlist',
+      '--user-agent',
+      'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.147 Mobile Safari/537.36',
+      '--referer',
+      'https://www.tiktok.com/',
+    ];
+  }
+
   async extract(url: string): Promise<Record<string, unknown>> {
     try {
+      const commonArgs = this.getCommonArgs();
+      const tiktokArgs = this.isTiktokUrl(url) ? this.getTiktokExtractorArgs() : [];
+
       const result = await this.processRunner.run(
         config.YT_DLP_PATH,
-        ['--dump-single-json', '--no-warnings', '--no-playlist',
-         '--user-agent', 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.147 Mobile Safari/537.36',
-         url],
+        ['--dump-single-json', ...commonArgs, ...tiktokArgs, url],
         config.PROVIDER_TIMEOUT_MS,
       );
+
       const data = JSON.parse(result.stdout) as Record<string, unknown>;
-      const rawFormats = (data.formats ?? []) as Array<Record<string, unknown>>;
       return data;
     } catch (error) {
-      throw classifyDownloadError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ url, error: message }, 'yt-dlp extract failed');
+      throw classifyDownloadError(message);
     }
   }
 
   async downloadFormat(url: string, formatId: string, outputDir: string): Promise<string> {
     const outputTemplate = path.join(outputDir, '%(title).200B-%(id)s.%(ext)s');
     try {
+      const commonArgs = this.getCommonArgs();
+      const tiktokArgs = this.isTiktokUrl(url) ? this.getTiktokExtractorArgs() : [];
+
       await this.processRunner.run(
         config.YT_DLP_PATH,
-        ['-f', formatId, '--no-playlist', '--no-warnings',
-         '--user-agent', 'Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.147 Mobile Safari/537.36',
-         '-o', outputTemplate, url],
+        ['-f', formatId, ...commonArgs, ...tiktokArgs, '-o', outputTemplate, url],
         config.DOWNLOAD_TIMEOUT_MS,
       );
     } catch (error) {
-      throw classifyDownloadError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error({ url, formatId, error: message }, 'yt-dlp download failed');
+      throw classifyDownloadError(message);
     }
 
+    // Small delay to ensure file system has flushed
     await new Promise((r) => setTimeout(r, 500));
 
     const files = await readdir(outputDir);

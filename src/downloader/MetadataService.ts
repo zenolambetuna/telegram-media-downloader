@@ -1,5 +1,5 @@
 import { ResolvedMediaInfo } from '../types/media';
-import { normalizeUrl } from '../utils/url';
+import { normalizeUrl, resolveTikTokShortUrl } from '../utils/url';
 import { withTimeout } from '../utils/time';
 import { config } from '../config/env';
 import { FormatResolver } from './FormatResolver';
@@ -30,8 +30,16 @@ export class MetadataService {
   ) {}
 
   async fetch(url: string, provider: string): Promise<ResolvedMediaInfo> {
+    // Resolve TikTok short URLs (vt.tiktok.com, vm.tiktok.com) BEFORE passing to yt-dlp.
+    // yt-dlp often fails with "Video not available" on short URLs because it cannot
+    // follow the redirect properly through Cloudflare protection.
+    const resolvedUrl = await resolveTikTokShortUrl(url);
+    if (resolvedUrl !== url) {
+      logger.info({ original: url, resolved: resolvedUrl }, 'TikTok short URL resolved');
+    }
+
     const raw = (await withTimeout(
-      this.ytDlpClient.extract(url),
+      this.ytDlpClient.extract(resolvedUrl),
       config.PROVIDER_TIMEOUT_MS,
       'metadata timeout',
     )) as RawMetadata;
@@ -43,13 +51,13 @@ export class MetadataService {
 
     const platform = provider || raw.extractor_key?.toLowerCase() || 'unknown';
     const title = raw.title || 'Untitled';
-    const canonicalUrl = normalizeUrl(raw.webpage_url ?? url);
+    const canonicalUrl = normalizeUrl(raw.webpage_url ?? resolvedUrl);
 
     const resolved = this.formatResolver.resolve(
       (raw.formats ?? []) as never[],
       platform,
       title,
-      url,
+      resolvedUrl,
     );
 
     resolved.canonicalUrl = canonicalUrl;
