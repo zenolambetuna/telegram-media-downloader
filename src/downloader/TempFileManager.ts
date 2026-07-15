@@ -4,6 +4,11 @@ import { config } from '../config/env';
 import { logger } from '../logger/logger';
 import { ensureDirectory, safeRemove } from '../utils/fs';
 
+/**
+ * TempFileManager owns the lifecycle of the on-disk workspace. It creates a
+ * unique workspace per job, cleans it after use, and can recover orphaned
+ * workspaces left behind by a crash.
+ */
 export class TempFileManager {
   private initialized = false;
 
