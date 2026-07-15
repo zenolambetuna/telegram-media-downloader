@@ -21,28 +21,10 @@ export class YtDlpClient {
       );
       const data = JSON.parse(result.stdout) as Record<string, unknown>;
 
-      // DEBUG: Log raw yt-dlp formats before any processing
-      const rawFormats = (data.formats ?? []) as Array<{
-        format_id?: string;
-        ext?: string;
-        vcodec?: string;
-        acodec?: string;
-        width?: number;
-        height?: number;
-        protocol?: string;
-      }>;
+      // DEBUG: Log COMPLETE raw yt-dlp formats before any processing
+      const rawFormats = (data.formats ?? []) as Array<Record<string, unknown>>;
       console.log('[DEBUG] RAW yt-dlp formats count:', rawFormats.length);
-      if (rawFormats.length > 0) {
-        console.log('[DEBUG] RAW format sample:', rawFormats.slice(0, 5).map(f => ({
-          format_id: f.format_id,
-          ext: f.ext,
-          vcodec: f.vcodec,
-          acodec: f.acodec,
-          width: f.width,
-          height: f.height,
-          protocol: f.protocol,
-        })));
-      }
+      console.log('[DEBUG] RAW formats COMPLETE:', JSON.stringify(rawFormats, null, 2));
 
       return data;
     } catch (error) {
