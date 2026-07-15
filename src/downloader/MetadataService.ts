@@ -38,6 +38,41 @@ export class MetadataService {
       'metadata timeout',
     )) as RawMetadata;
 
+    // DEBUG: Log raw yt-dlp formats before FormatResolver
+    const rawFormatsBeforeResolver = (raw.formats ?? []) as Array<{
+      format_id?: string;
+      ext?: string;
+      vcodec?: string;
+      acodec?: string;
+      width?: number;
+      height?: number;
+      protocol?: string;
+      filesize?: number;
+      filesize_approx?: number;
+      format_note?: string;
+      tbr?: number;
+      vbr?: number;
+      abr?: number;
+    }>;
+    console.log('[DEBUG] RAW formats BEFORE FormatResolver:', {
+      total: rawFormatsBeforeResolver.length,
+      samples: rawFormatsBeforeResolver.slice(0, 10).map(f => ({
+        format_id: f.format_id,
+        ext: f.ext,
+        vcodec: f.vcodec,
+        acodec: f.acodec,
+        width: f.width,
+        height: f.height,
+        protocol: f.protocol,
+        filesize: f.filesize,
+        filesize_approx: f.filesize_approx,
+        format_note: f.format_note,
+        tbr: f.tbr,
+        vbr: f.vbr,
+        abr: f.abr,
+      }))
+    });
+
     const formatResolverOutput = this.formatResolver.resolve((raw.formats ?? []) as never[]);
     const formats = formatResolverOutput;
 

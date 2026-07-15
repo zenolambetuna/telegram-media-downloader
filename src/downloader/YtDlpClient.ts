@@ -19,7 +19,32 @@ export class YtDlpClient {
         ['--dump-single-json', '--no-warnings', '--no-playlist', url],
         config.PROVIDER_TIMEOUT_MS,
       );
-      return JSON.parse(result.stdout) as Record<string, unknown>;
+      const data = JSON.parse(result.stdout) as Record<string, unknown>;
+
+      // DEBUG: Log raw yt-dlp formats before any processing
+      const rawFormats = (data.formats ?? []) as Array<{
+        format_id?: string;
+        ext?: string;
+        vcodec?: string;
+        acodec?: string;
+        width?: number;
+        height?: number;
+        protocol?: string;
+      }>;
+      console.log('[DEBUG] RAW yt-dlp formats count:', rawFormats.length);
+      if (rawFormats.length > 0) {
+        console.log('[DEBUG] RAW format sample:', rawFormats.slice(0, 5).map(f => ({
+          format_id: f.format_id,
+          ext: f.ext,
+          vcodec: f.vcodec,
+          acodec: f.acodec,
+          width: f.width,
+          height: f.height,
+          protocol: f.protocol,
+        })));
+      }
+
+      return data;
     } catch (error) {
       throw classifyDownloadError(error instanceof Error ? error.message : String(error));
     }
