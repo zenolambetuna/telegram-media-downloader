@@ -22,12 +22,12 @@ export function buildKindKeyboard(formats: MediaFormat[]): InlineKeyboard {
   const audioCount = formats.filter((format) => format.kind === 'audio').length;
   console.log('[DEBUG] buildKindKeyboard input:', { total: formats.length, video: videoCount, audio: audioCount });
   if (formats.some((format) => format.kind === 'video')) {
-    keyboard.text('🎬 Video', 'choose:video');
+    keyboard.text('🎬 Video', 'kind:video');
   }
   if (formats.some((format) => format.kind === 'audio')) {
-    keyboard.text('🎵 Audio', 'choose:audio');
+    keyboard.text('🎵 Audio', 'kind:audio');
   }
-  keyboard.text('❌ Cancel', 'choose:cancel');
+  keyboard.text('❌ Cancel', 'abort');
   console.log('[DEBUG] Keyboard buttons:', keyboard.inline_keyboard.flat().map(b => b.text));
   return keyboard;
 }
@@ -71,7 +71,7 @@ function buildVideoFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
     }
   }
 
-  keyboard.text('❌ Cancel', 'choose:cancel');
+  keyboard.text('❌ Cancel', 'abort');
   return keyboard;
 }
 
@@ -87,7 +87,7 @@ function buildAudioFormatKeyboard(formats: MediaFormat[]): InlineKeyboard {
     keyboard.text(`${kbps}${codec}${formatSize(format.filesize)}`.trim(), `format:${format.id}`).row();
   }
 
-  keyboard.text('❌ Cancel', 'choose:cancel');
+  keyboard.text('❌ Cancel', 'abort');
   return keyboard;
 }
 

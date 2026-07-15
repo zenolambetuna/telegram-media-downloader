@@ -101,6 +101,51 @@ export async function createBotApplication(): Promise<{
 
   bot.use(session({ initial: initialSession }));
 
+  // DEBUG: Log ALL updates to verify callback_query updates reach the bot
+  bot.use(async (ctx, next) => {
+    let updateType = 'unknown';
+    if (ctx.callbackQuery) {
+      updateType = 'callback_query';
+    } else if (ctx.message) {
+      updateType = 'message';
+    } else if (ctx.inlineQuery) {
+      updateType = 'inline_query';
+    } else if (ctx.editedMessage) {
+      updateType = 'edited_message';
+    } else if (ctx.channelPost) {
+      updateType = 'channel_post';
+    } else if (ctx.editedChannelPost) {
+      updateType = 'edited_channel_post';
+    } else if (ctx.chatMember) {
+      updateType = 'chat_member';
+    } else if (ctx.myChatMember) {
+      updateType = 'my_chat_member';
+    } else if (ctx.chatJoinRequest) {
+      updateType = 'chat_join_request';
+    } else if (ctx.poll) {
+      updateType = 'poll';
+    } else if (ctx.pollAnswer) {
+      updateType = 'poll_answer';
+    } else if (ctx.shippingQuery) {
+      updateType = 'shipping_query';
+    } else if (ctx.preCheckoutQuery) {
+      updateType = 'pre_checkout_query';
+    } else if (ctx.chosenInlineResult) {
+      updateType = 'chosen_inline_result';
+    }
+    
+    console.log('[UPDATE] type:', updateType, 'data:', JSON.stringify(ctx.update).slice(0, 200));
+    if (ctx.callbackQuery) {
+      console.log('[CALLBACK] update received', {
+        callbackId: ctx.callbackQuery.id,
+        callbackData: ctx.callbackQuery.data,
+        from: ctx.callbackQuery.from?.id,
+        messageId: ctx.callbackQuery.message?.message_id,
+      });
+    }
+    await next();
+  });
+
   bot.use(async (ctx, next) => {
     if (ctx.from) {
       await rateLimit(ctx.from.id);
@@ -220,6 +265,7 @@ export async function createBotApplication(): Promise<{
   });
 
   bot.callbackQuery(/^kind:(video|audio)$/, async (ctx) => {
+    console.log('[CALLBACK] kind handler invoked');
     const kind = ctx.match[1] as 'video' | 'audio';
     console.log('[CALLBACK] received kind:', kind);
     console.log('[CALLBACK] data:', ctx.callbackQuery.data);
@@ -270,9 +316,9 @@ export async function createBotApplication(): Promise<{
     });
   });
 
-  bot.callbackQuery(/^fmt:(\d+)$/, async (ctx) => {
-    const index = Number(ctx.match[1]);
-    console.log('[CALLBACK] received fmt:', index);
+  bot.callbackQuery(/^format:(.+)$/, async (ctx) => {
+    const formatId = ctx.match[1];
+    console.log('[CALLBACK] received format:', formatId);
     const metadata = ctx.session.pendingMetadata;
     const url = ctx.session.pendingUrl;
     const userId = ctx.from?.id;
@@ -284,10 +330,10 @@ export async function createBotApplication(): Promise<{
       await ctx.answerCallbackQuery({ text: 'request expired' });
       return;
     }
-    const format = metadata.formats[index];
+    const format = metadata.formats.find((item) => item.id === formatId);
     console.log('[CALLBACK] selected format:', format ? { id: format.id, kind: format.kind, quality: format.quality } : null);
     if (!format) {
-      console.log('[CALLBACK] ERROR: format not found at index', index);
+      console.log('[CALLBACK] ERROR: format not found with id', formatId);
       await ctx.answerCallbackQuery({ text: 'that format is gone' });
       return;
     }
@@ -303,7 +349,7 @@ export async function createBotApplication(): Promise<{
 
     const url2 = url;
     const quality = format.quality;
-    const formatId = format.id;
+    const selectedFormatId = format.id;
 
     ctx.session.pendingMetadata = undefined;
     ctx.session.pendingUrl = undefined;
@@ -314,7 +360,7 @@ export async function createBotApplication(): Promise<{
         console.log('[CALLBACK] executing pipeline');
         return await pipeline.execute({
           url: url2,
-          formatId,
+          formatId: selectedFormatId,
           quality,
           userId,
           chatId,
