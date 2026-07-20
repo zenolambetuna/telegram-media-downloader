@@ -1,4 +1,4 @@
-import { access, stat } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config/env';
 import { logger } from '../logger/logger';

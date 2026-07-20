@@ -105,26 +105,140 @@ FFMPEG_PATH=ffmpeg
 src/
   bot/           grammY bot layer: keyboards, progress, jobs, cancellation
   providers/     provider plugins (youtube implemented) + shared base
-  core/          registry, loader, validator, matcher, pipeline, inspector
+  core/          registry, loader, validator, matcher, pipeline, inspector,
+                 QueueWorker, MetricsCollector, HealthCheck, DriveApiClient
   downloader/    universal download engine + yt-dlp/ffmpeg clients
   telegram/      storage engine: upload, message, cache, thumbnails, sender
-  storage/       database + repositories
-  queue/         concurrency queue
+  storage/       database + repositories (media, thumbnail, error, counter,
+                 queue job, dead letter)
+  queue/         in-memory concurrency queue + cancellation tokens
   config/        env + provider config
-  logger/        pino logger
-  types/         shared contracts
+  logger/        pino logger + structured logging context + sanitizer
+  types/         shared contracts (incl. error category classification)
   main.ts        entrypoint
 tests/           vitest unit tests
 docs/            per-module documentation
 ```
 
+See [`docs/QUEUE_ARCHITECTURE.md`](./docs/QUEUE_ARCHITECTURE.md) for the
+two-layer (in-memory concurrency + persistent durability) design.
+
 ## Admin commands
 
 - `/stats` cache, uploads, cache hits, errors
-- `/queue` pending and active jobs
+- `/queue` pending and active jobs (in-memory + persistent)
 - `/providers` loaded and failed providers with versions
-- `/health` runtime check
+- `/health` runtime health (database, Telegram bot, Telegram API root, Drive Bridge API)
+- `/metrics` queue length, success/failed/retry/dead counters, processing time percentiles, last sync time, drive sync metrics, success/retry rates, drive availability
+- `/dead` recent dead-letter jobs (last 10)
+- `/deadq` dead queue detail (last 20 with attempts and category)
+- `/retry <id>` re-queue a dead-letter job
+- `/drop <id>` drop a dead-letter job permanently
+- `/retryq` retry queue (pending jobs awaiting their next attempt)
+- `/sync` last sync info, drive sync metrics, drive availability
+- `/drive` Drive Bridge compatibility check (version, endpoints, schemas)
+- `/drivehealth` Drive connection health (health probe + version probe + sync metrics) — Stage 4.0
+- `/diag` combined diagnostic (health + queue + metrics + drive compatibility)
 - `/cancel` cancel your running downloads
+
+## Integration testing (Stage 2.9 / Stage 4.0 / Stage 5.0)
+
+Stage 2.9 adds an end-to-end integration test suite and a mock Drive
+server so the downloader can be verified against the v1 Bridge contract
+without a real Drive instance. Stage 4.0 extends it with the full
+folder/share/trash/favorite/recent/collaboration surface and the
+post-upload/post-download sync flow. Stage 5.0 adds a comprehensive
+end-to-end verification suite (60 tests covering upload flow, concurrent
+upload, retry, queue recovery, Drive restart, idempotency, metrics,
+stress, memory leak, concurrency, smoke, and backward compatibility). See
+[`docs/INTEGRATION_TEST.md`](./docs/INTEGRATION_TEST.md) for the test
+guide and [`docs/API_COMPATIBILITY.md`](./docs/API_COMPATIBILITY.md) for
+the contract reference. Run the suite with:
+
+```bash
+BOT_TOKEN=x CHANNEL_ID=-100 ADMIN_ID=1 npm test
+```
+
+The mock server (`tests/mockDriveServer.ts`) simulates success, timeout,
+401, 403, 404, 409, 422, 429, 500, and network failure for every
+endpoint, so the integration tests cover authentication, idempotency,
+retry classification, timeout, invalid payload, duplicate request, and
+network failure. The Stage 5.0 E2E suite (`tests/e2eStage50.test.ts`)
+exercises every production scenario: 100 concurrent uploads, queue
+recovery on restart, Drive offline survival, permanent vs retryable
+failure classification, and per-service metrics verification.
+
+## Production deployment
+
+Stage 2.8 makes the engine production-ready. The queue is durable across
+restarts, the worker retries transient failures, dead-letter jobs stay
+around for inspection, and every component is observable. See
+[`docs/PRODUCTION_DEPLOYMENT.md`](./docs/PRODUCTION_DEPLOYMENT.md) for the
+full guide and [`docs/RECOVERY_GUIDE.md`](./docs/RECOVERY_GUIDE.md) for the
+operator runbook.
+
+### Production configuration
+
+The defaults are safe; production deployments add the optional Drive Bridge
+integration and tune queue/worker behaviour:
+
+```env
+# Required
+BOT_TOKEN=
+CHANNEL_ID=
+ADMIN_ID=
+
+# Optional — Drive Bridge API (Stage 3 link)
+DRIVE_API_BASE_URL=https://drive.example.com
+DRIVE_API_KEY=
+DRIVE_API_TIMEOUT_MS=10000
+
+# Optional — queue reliability
+QUEUE_RECOVERY_ENABLED=true
+QUEUE_MAX_RETRIES=3
+QUEUE_RETRY_BASE_DELAY_MS=2000
+QUEUE_DEAD_LETTER_ENABLED=true
+QUEUE_PROCESSING_TIMEOUT_MS=1800000
+
+# Optional — worker
+WORKER_ENABLED=true
+WORKER_TICK_MS=1000
+WORKER_GRACEFUL_SHUTDOWN_MS=15000
+
+# Optional — health & monitoring
+HEALTH_CHECK_ENABLED=true
+HEALTH_CHECK_TIMEOUT_MS=8000
+HEALTH_CHECK_FAIL_ON_DRIVE_ERROR=false
+METRICS_FLUSH_INTERVAL_MS=15000
+```
+
+### Verify a deployment
+
+```bash
+npm run typecheck   # tsc --noEmit
+npm run lint        # eslint . --ext .ts
+npm run build       # tsc -> dist/
+npm test            # vitest unit tests (no network/yt-dlp needed)
+npm start           # node dist/main.js
+```
+
+On startup the bot prints a health report covering the database, Telegram
+bot, Telegram API root, and the Drive Bridge API (when configured). Any
+`down` component is logged at `error` level; the bot still starts so the
+queue worker can drain pending jobs.
+
+### Operating the queue
+
+- `/queue` shows in-memory (active/pending) and persistent
+  (pending/processing/dead) depths.
+- `/metrics` shows the success/failed/retry/dead counters, processing time
+  percentiles, and last sync time.
+- `/dead` lists dead-letter jobs. Use `/retry <id>` to re-queue one or
+  `/drop <id>` to discard it.
+- Logs include `queueId`, `requestId`, `ownerId`, and `processingDurationMs`
+  for every job. Secrets (token, api_key, authorization, cookie, password)
+  are redacted automatically by pino's `redact` config plus
+  `sanitizeForLog` for arbitrary payloads.
 
 ## Troubleshooting
 

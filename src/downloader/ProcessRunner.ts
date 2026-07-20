@@ -62,7 +62,10 @@ export class ProcessRunner {
           settled = true;
           clearTimeout(timeout);
           if (code !== 0) {
-            logger.error({ command, args, code, stderr }, 'child process failed');
+            logger.error(
+              { command, args, code, stdout: stdout.slice(0, 2000), stderr: stderr.slice(0, 2000) },
+              'child process failed',
+            );
             reject(new Error(stderr || `process exited with code ${code}`));
             return;
           }

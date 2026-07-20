@@ -20,6 +20,27 @@ export type ErrorCode =
   | 'TOO_LARGE'
   | 'CANCELLED';
 
+/**
+ * High-level error category used by the queue worker to decide retry vs.
+ * dead-letter behaviour. The classification is intentionally coarse so the
+ * worker does not need to know about every individual ErrorCode.
+ *
+ * - `validation`   — caller input is wrong; never retried.
+ * - `permanent`    — the media itself cannot be served; never retried.
+ * - `network`      — transient network failure; retried with backoff.
+ * - `telegram`     — Telegram API failure (FloodWait, 5xx); retried.
+ * - `database`     — local DB failure; retried once then dead-letter.
+ * - `retryable`    — anything else that should be retried.
+ */
+export type ErrorCategory =
+  | 'validation'
+  | 'permanent'
+  | 'network'
+  | 'telegram'
+  | 'database'
+  | 'api'
+  | 'retryable';
+
 export class AppError extends Error {
   constructor(
     message: string,
@@ -29,6 +50,67 @@ export class AppError extends Error {
     super(message);
     this.name = 'AppError';
   }
+}
+
+/** Maps an ErrorCode to a coarse ErrorCategory for the queue worker. */
+export function categoryOf(code: ErrorCode): ErrorCategory {
+  switch (code) {
+    case 'INVALID_URL':
+    case 'UNSUPPORTED_PROVIDER':
+    case 'UNSUPPORTED_FORMAT':
+    case 'VALIDATION_ERROR':
+    case 'TOO_LARGE':
+      return 'validation';
+    case 'PRIVATE_MEDIA':
+    case 'DELETED_MEDIA':
+    case 'UNAVAILABLE_MEDIA':
+    case 'AGE_RESTRICTED':
+    case 'GEO_RESTRICTED':
+    case 'LIVE_STREAM':
+    case 'NOT_FOUND':
+      return 'permanent';
+    case 'NETWORK_FAILURE':
+    case 'TIMEOUT':
+      return 'network';
+    case 'UPLOAD_FAILED':
+    case 'RATE_LIMITED':
+      return 'telegram';
+    case 'DOWNLOAD_FAILED':
+    case 'MERGE_FAILED':
+    case 'DISK_FULL':
+      return 'retryable';
+    case 'CANCELLED':
+      return 'permanent';
+  }
+}
+
+/** Whether a job with the given error code should be retried by the worker. */
+export function isRetryableCode(code: ErrorCode): boolean {
+  const category = categoryOf(code);
+  return category === 'network' || category === 'telegram' || category === 'retryable' || category === 'database' || category === 'api';
+}
+
+/** Categorise an unknown thrown value into an ErrorCategory. */
+export function categorize(error: unknown): ErrorCategory {
+  if (error instanceof AppError) {
+    return categoryOf(error.code);
+  }
+  if (error instanceof Error) {
+    const text = error.message.toLowerCase();
+    if (text.includes('flood') || text.includes('429') || text.includes('retry_after')) {
+      return 'telegram';
+    }
+    if (text.includes('timeout') || text.includes('timed out')) {
+      return 'network';
+    }
+    if (text.includes('econnreset') || text.includes('econnrefused') || text.includes('enotfound') || text.includes('network')) {
+      return 'network';
+    }
+    if (text.includes('sqlite') || text.includes('database') || text.includes('constraint')) {
+      return 'database';
+    }
+  }
+  return 'retryable';
 }
 
 /**

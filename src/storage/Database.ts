@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { config } from '../config/env';
-import { ensureDirectory } from '../utils/fs';
+import { logger } from '../logger/logger';
 
 /**
  * SQLite connection and schema management. The media cache is keyed by a
@@ -12,10 +13,12 @@ import { ensureDirectory } from '../utils/fs';
 export class DatabaseConnection {
   private readonly db: Database.Database;
 
-  constructor() {
-    const dbPath = path.resolve(config.DATABASE_PATH);
-    void ensureDirectory(path.dirname(dbPath));
-    this.db = new Database(dbPath);
+  constructor(dbPath?: string) {
+    const resolved = dbPath ?? path.resolve(config.DATABASE_PATH);
+    // Synchronous so the DB file can be opened immediately after. Using
+    // mkdirSync(recursive: true) is a no-op when the directory exists.
+    mkdirSync(path.dirname(resolved), { recursive: true });
+    this.db = new Database(resolved);
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
     this.migrate();
@@ -80,9 +83,67 @@ export class DatabaseConnection {
         key TEXT PRIMARY KEY,
         value INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS queue_jobs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'download',
+        status TEXT NOT NULL DEFAULT 'pending',
+        attempts INTEGER NOT NULL DEFAULT 0,
+        max_attempts INTEGER NOT NULL DEFAULT 3,
+        url TEXT NOT NULL,
+        format_id TEXT NOT NULL,
+        quality TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        owner_id INTEGER NOT NULL,
+        request_id TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        locked_until TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        last_error_category TEXT,
+        next_attempt_at TEXT
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_queue_jobs_status ON queue_jobs(status);
+      CREATE INDEX IF NOT EXISTS idx_queue_jobs_next_attempt ON queue_jobs(status, next_attempt_at);
+
+      CREATE TABLE IF NOT EXISTS dead_letter (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL DEFAULT 'download',
+        url TEXT NOT NULL,
+        format_id TEXT NOT NULL,
+        quality TEXT NOT NULL,
+        user_id INTEGER NOT NULL,
+        chat_id INTEGER NOT NULL,
+        owner_id INTEGER NOT NULL,
+        attempts INTEGER NOT NULL,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        last_error_category TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_dead_letter_created ON dead_letter(created_at);
     `);
 
     this.migrateToCompositeCacheKey();
+    this.migrateQueueProcessingStuck();
+  }
+
+  /**
+   * On startup any job left in `processing` from a previous run is stale
+   * (the process died mid-flight). Reset it to `pending` so the worker can
+   * pick it back up. Safe to run repeatedly; only touches rows that need it.
+   */
+  private migrateQueueProcessingStuck(): void {
+    const stale = this.db
+      .prepare("UPDATE queue_jobs SET status='pending', locked_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE status='processing'")
+      .run();
+    if (stale.changes > 0) {
+      logger.info({ reset: stale.changes }, 'reset stuck processing jobs back to pending');
+    }
   }
 
   /**

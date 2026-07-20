@@ -1,7 +1,6 @@
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/env';
-import { logger } from '../logger/logger';
 import { AppError } from '../types/errors';
 import {
   EngineDownloadRequest,
